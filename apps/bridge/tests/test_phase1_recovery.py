@@ -298,9 +298,15 @@ class TestCarlaGeolocationCompatibility:
 
     def test_carla_010_inverse_projection_without_removed_api(self):
         from digital_twin_bridge.geo_utils import gps_to_carla
+        from v2x_common.geodesy import TransverseMercator
 
         origin_lat = 37.9
         origin_lon = -122.3
+        georeference = (
+            f"+proj=tmerc +lat_0={origin_lat} +lon_0={origin_lon} +k=1 "
+            "+x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
+        )
+        projection = TransverseMercator.from_proj_string(georeference)
         metres_per_lon = 111_320.0 * math.cos(math.radians(origin_lat))
 
         class Carla010Map:
@@ -314,10 +320,19 @@ class TestCarlaGeolocationCompatibility:
                 assert project_to_road is True
                 return None
 
+            def to_opendrive(self):
+                return (
+                    "<OpenDRIVE><header><geoReference><![CDATA["
+                    + georeference
+                    + "]]></geoReference></header></OpenDRIVE>"
+                )
+
+        latitude, longitude = projection.inverse(35.0, 20.0)
+
         location = gps_to_carla(
             Carla010Map(),
-            origin_lat + 20.0 / 111_320.0,
-            origin_lon + 35.0 / metres_per_lon,
+            latitude,
+            longitude,
         )
 
         assert location.x == pytest.approx(35.0)

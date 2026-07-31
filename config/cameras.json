@@ -3,6 +3,7 @@
     "name": "Richmond Field Station",
     "lat": 37.91560117034595,
     "lon": -122.33478756387032,
+    "map_georeference": "+proj=tmerc +lat_0=37.9150891287087 +lon_0=-122.333308830857 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +vunits=m +no_defs",
     "geohash": "9q9p8",
     "city": "Richmond",
     "state": "CA",

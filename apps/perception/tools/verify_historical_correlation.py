@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import shutil
@@ -45,6 +46,8 @@ PLAYLIST_LIMIT = 8 * 1024 * 1024
 INIT_FRAGMENT_LIMIT = 32 * 1024 * 1024
 MEDIA_FRAGMENT_LIMIT = 192 * 1024 * 1024
 JSON_LIMIT = 2 * 1024 * 1024
+SNAPSHOT_MANIFEST_LIMIT = 2 * 1024 * 1024
+SNAPSHOT_DETECTIONS_LIMIT = 128 * 1024 * 1024
 FFPROBE_OUTPUT_LIMIT = 16 * 1024 * 1024
 SOF_MARKERS = {
     0xC0,
@@ -201,6 +204,10 @@ def fetch_bytes(url: str, *, limit: int, timeout_seconds: float, label: str) -> 
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
             body = response.read(limit + 1)
+    except HTTPError as exc:
+        error = _network_error(label, exc)
+        exc.close()
+        raise error from None
     except Exception as exc:
         error = _network_error(label, exc)
         close = getattr(exc, "close", None)
@@ -882,6 +889,38 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def write_json_evidence(
+    path: Path,
+    payload: dict[str, object],
+    *,
+    overwrite: bool = False,
+) -> None:
+    """Atomically persist a credential-free verifier report."""
+    if path.exists() and not overwrite:
+        raise VerificationError(
+            "JSON evidence already exists (use --overwrite to replace it)"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_path.replace(path)
+    except Exception:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
+
+
 def _nested_bbox(payload: dict[str, object]) -> object | None:
     if payload.get("bbox") is not None:
         return payload["bbox"]
@@ -936,6 +975,65 @@ def load_detection(path: Path | None) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise VerificationError("detection JSON must contain one object")
     return payload
+
+
+def load_detection_from_snapshot(
+    snapshot_dir: Path,
+    event_id: str,
+) -> dict[str, object]:
+    """Load one event from a hash-bound, immutable corpus snapshot."""
+    if not snapshot_dir.is_dir():
+        raise VerificationError("detection snapshot directory does not exist")
+    manifest_path = snapshot_dir / "manifest.json"
+    detections_path = snapshot_dir / "detections.ndjson"
+    if not manifest_path.is_file() or not detections_path.is_file():
+        raise VerificationError("detection snapshot is incomplete")
+    if manifest_path.stat().st_size > SNAPSHOT_MANIFEST_LIMIT:
+        raise VerificationError("detection snapshot manifest exceeds its size limit")
+    if detections_path.stat().st_size > SNAPSHOT_DETECTIONS_LIMIT:
+        raise VerificationError("detection snapshot data exceeds its size limit")
+    try:
+        manifest = json.loads(manifest_path.read_bytes())
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise VerificationError("detection snapshot manifest is invalid JSON") from exc
+    if not isinstance(manifest, dict) or manifest.get("schema") != (
+        "v2x-detection-corpus-snapshot/v1"
+    ):
+        raise VerificationError("detection snapshot schema is unsupported")
+    artifacts = manifest.get("artifacts")
+    expected_sha256 = (
+        artifacts.get("detections.ndjson") if isinstance(artifacts, dict) else None
+    )
+    if (
+        not isinstance(expected_sha256, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
+        or sha256_file(detections_path) != expected_sha256
+    ):
+        raise VerificationError("detection snapshot data hash does not match manifest")
+    normalized_event_id = event_id.strip()
+    if not normalized_event_id:
+        raise VerificationError("snapshot event id is empty")
+    matched: dict[str, object] | None = None
+    try:
+        with detections_path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                payload = json.loads(line)
+                if not isinstance(payload, dict):
+                    raise VerificationError(
+                        f"detection snapshot row {line_number} is not an object"
+                    )
+                if str(payload.get("event_id", "")).strip() != normalized_event_id:
+                    continue
+                if matched is not None:
+                    raise VerificationError("snapshot event id is not unique")
+                matched = payload
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise VerificationError("detection snapshot data is invalid NDJSON") from exc
+    if matched is None:
+        raise VerificationError("snapshot event id was not found")
+    return matched
 
 
 def validate_media_timestamp_trust(
@@ -1068,8 +1166,21 @@ def validate_media_timestamp_trust(
 
 
 def resolve_inputs(args: argparse.Namespace) -> dict[str, object]:
-    detection = load_detection(args.detection_json)
-    if args.detection_json is not None:
+    detection_json = getattr(args, "detection_json", None)
+    snapshot_dir = getattr(args, "snapshot", None)
+    snapshot_event_id = getattr(args, "event_id", None)
+    if detection_json is not None and snapshot_dir is not None:
+        raise VerificationError("use either --detection-json or --snapshot, not both")
+    if snapshot_dir is None and snapshot_event_id is not None:
+        raise VerificationError("--event-id requires --snapshot")
+    if snapshot_dir is not None and snapshot_event_id is None:
+        raise VerificationError("--snapshot requires --event-id")
+    detection = (
+        load_detection_from_snapshot(snapshot_dir, snapshot_event_id)
+        if snapshot_dir is not None
+        else load_detection(detection_json)
+    )
+    if detection_json is not None or snapshot_dir is not None:
         override_flags = {
             "camera": "--camera",
             "media_timestamp": "--media-timestamp",
@@ -1133,6 +1244,7 @@ def resolve_inputs(args: argparse.Namespace) -> dict[str, object]:
             detection, timestamp_field, media_timestamp
         ),
         "bbox": bbox,
+        "event_id": detection.get("event_id"),
         "object_id": args.object_id or detection.get("object_id"),
         "object_type": args.object_type or detection.get("object_type"),
         "confidence": confidence,
@@ -1190,6 +1302,7 @@ def verify_historical_correlation(
     timestamp_field: str,
     timestamp_trust: dict[str, object],
     bbox: tuple[float, float, float, float],
+    event_id: object = None,
     object_id: object = None,
     object_type: object = None,
     confidence: object = None,
@@ -1315,6 +1428,7 @@ def verify_historical_correlation(
         },
         "detection": {
             "camera_id": camera_id,
+            "event_id": str(event_id) if event_id is not None else None,
             "object_id": str(object_id) if object_id is not None else None,
             "object_type": str(object_type) if object_type is not None else None,
             "confidence": confidence,
@@ -1394,7 +1508,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--media-timestamp",
         help="untrusted diagnostic input; cannot be combined with --detection-json",
     )
-    parser.add_argument("--detection-json", type=Path)
+    input_group = parser.add_mutually_exclusive_group()
+    input_group.add_argument("--detection-json", type=Path)
+    input_group.add_argument(
+        "--snapshot",
+        type=Path,
+        help="hash-bound v2x-detection-corpus-snapshot/v1 directory",
+    )
+    parser.add_argument(
+        "--event-id",
+        help="persisted event id to load from --snapshot",
+    )
     parser.add_argument(
         "--bbox",
         help="diagnostic x1,y1,x2,y2; cannot be combined with --detection-json",
@@ -1413,6 +1537,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="diagnostic input; cannot be combined with --detection-json",
     )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--report-output",
+        type=Path,
+        help="optional atomic JSON evidence path; signed URLs are never included",
+    )
     parser.add_argument("--crop-output", type=Path)
     parser.add_argument("--window-seconds", type=float, default=60.0)
     parser.add_argument("--timeout", type=float, default=30.0)
@@ -1466,6 +1595,16 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"verification failed: {_safe_failure_message(exc)}", file=sys.stderr)
         return 1
+    if args.report_output is not None:
+        try:
+            write_json_evidence(
+                args.report_output,
+                evidence,
+                overwrite=args.overwrite,
+            )
+        except Exception as exc:
+            print(f"verification failed: {_safe_failure_message(exc)}", file=sys.stderr)
+            return 1
     print(json.dumps(evidence, indent=2, sort_keys=True))
     return 0 if evidence["result"]["gate_passed"] else 1
 

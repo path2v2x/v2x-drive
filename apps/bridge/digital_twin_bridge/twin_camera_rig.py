@@ -23,8 +23,8 @@ import json
 import logging
 import math
 import os
-import threading
 from copy import deepcopy
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -41,6 +41,18 @@ TWIN_LENS_ATTRIBUTE_KEYS = (
     "lens_x_size",
     "lens_y_size",
 )
+
+# RR/CARLA 0.10 reports this complete tuple on a newly spawned RGB sensor.
+# It is the only lens state accepted by the current pinhole projection model.
+# Never write these attributes at runtime; observe and verify them on the actor.
+CARLA_DEFAULT_PINHOLE_LENS = {
+    "lens_k": -1.0,
+    "lens_kcube": 0.0,
+    "lens_circle_falloff": 5.0,
+    "lens_circle_multiplier": 0.0,
+    "lens_x_size": 0.08,
+    "lens_y_size": 0.08,
+}
 
 DEFAULT_CAMERAS_JSON = Path(__file__).resolve().parents[3] / "config" / "cameras.json"
 
@@ -87,37 +99,151 @@ def horizontal_fov_deg(intrinsics: dict) -> float:
     return math.degrees(2.0 * math.atan((intrinsics["width"] / 2.0) / intrinsics["fx"]))
 
 
-def compute_twin_camera_transform(carla_map, site: dict, camera: dict):
+def twin_horizontal_fov_deg(camera: dict) -> float:
+    """Configured twin FOV, including an auditable calibration offset."""
+    twin_pose = camera.get("twin_pose") or {}
+    return horizontal_fov_deg(camera["intrinsics"]) + float(
+        twin_pose.get("fov_offset_deg", 0.0)
+    )
+
+
+def camera_with_twin_pose(camera: dict, overrides: dict) -> dict:
+    """Return a candidate camera without mutating the shared configuration."""
+    candidate = deepcopy(camera)
+    pose = dict(candidate.get("twin_pose") or {})
+    pose.update({key: float(value) for key, value in overrides.items()})
+    candidate["twin_pose"] = pose
+    return candidate
+
+
+def normalize_angle_degrees(value: float) -> float:
+    """Normalize an angle to the CARLA-compatible [-180, 180] interval."""
+    normalized = (float(value) + 180.0) % 360.0 - 180.0
+    return 180.0 if normalized == -180.0 and value > 0 else normalized
+
+
+def twin_pose_from_absolute(
+    anchor_location, base: dict, location, pitch_deg, yaw_deg, roll_deg, fov_deg
+) -> dict:
+    """Convert one absolute fitted camera into production twin_pose offsets."""
+    anchor = [float(value) for value in anchor_location]
+    target = [float(value) for value in location]
+    yaw = float(yaw_deg)
+    yaw_radians = math.radians(yaw)
+    delta_x, delta_y = target[0] - anchor[0], target[1] - anchor[1]
+    return {
+        "forward_offset_m": (
+            delta_x * math.cos(yaw_radians) + delta_y * math.sin(yaw_radians)
+        ),
+        "right_offset_m": (
+            -delta_x * math.sin(yaw_radians) + delta_y * math.cos(yaw_radians)
+        ),
+        "height_offset_m": target[2] - anchor[2],
+        "pitch_offset_deg": float(pitch_deg) - float(base["pitch_deg"]),
+        "yaw_offset_deg": normalize_angle_degrees(yaw - float(base["yaw_deg"])),
+        "roll_offset_deg": float(roll_deg) - float(base["roll_deg"]),
+        "fov_offset_deg": float(fov_deg) - float(base["fov_deg"]),
+    }
+
+
+def absolute_twin_model(anchor_location, base: dict, twin_pose: dict) -> dict:
+    """Apply production twin_pose semantics without importing CARLA classes."""
+    anchor = [float(value) for value in anchor_location]
+    yaw = float(base["yaw_deg"]) + float(twin_pose.get("yaw_offset_deg", 0.0))
+    yaw_radians = math.radians(yaw)
+    forward = float(twin_pose.get("forward_offset_m", 0.0))
+    right = float(twin_pose.get("right_offset_m", 0.0))
+    return {
+        "location": [
+            anchor[0] + forward * math.cos(yaw_radians) - right * math.sin(yaw_radians),
+            anchor[1] + forward * math.sin(yaw_radians) + right * math.cos(yaw_radians),
+            anchor[2] + float(twin_pose.get("height_offset_m", 0.0)),
+        ],
+        "pitch_deg": float(base["pitch_deg"]) + float(twin_pose.get("pitch_offset_deg", 0.0)),
+        "yaw_deg": yaw,
+        "roll_deg": float(base["roll_deg"]) + float(twin_pose.get("roll_offset_deg", 0.0)),
+        "fov_deg": float(base["fov_deg"]) + float(twin_pose.get("fov_offset_deg", 0.0)),
+    }
+
+
+def configure_twin_camera_blueprint(
+    camera_bp,
+    camera: dict,
+    image_width: int,
+    image_height: int,
+    fps: Optional[float] = None,
+) -> None:
+    """Apply only the non-lens camera model shared by rig and verifier.
+
+    RR lens-attribute mutation is held after the exit-139 canary.  Callers
+    must reject ``twin_lens`` before this helper and verify the complete lens
+    tuple observed on the spawned actor instead of writing lens attributes.
+    """
+    camera_bp.set_attribute("image_size_x", str(int(image_width)))
+    camera_bp.set_attribute("image_size_y", str(int(image_height)))
+    camera_bp.set_attribute("fov", f"{twin_horizontal_fov_deg(camera):.6f}")
+    if fps is not None:
+        camera_bp.set_attribute("sensor_tick", f"{1.0 / float(fps):.6f}")
+
+    if camera.get("twin_lens"):
+        raise ValueError("twin lens overrides are held for runtime safety")
+
+
+def compute_twin_camera_transform(
+    carla_map,
+    site: dict,
+    camera: dict,
+    *,
+    require_opendrive_georeference: bool = False,
+    return_projection_provenance: bool = False,
+):
     """CARLA Transform for a real camera: pole GPS + height, mirrored pose.
 
     Optional per-camera ``twin_pose`` overrides in cameras.json refine the
     twin against the modelled map (fitted with tools/fit_twin_camera_poses.py):
-    ``yaw_offset_deg``, ``pitch_offset_deg``, ``height_offset_m``, and
-    ``forward_offset_m`` (moves the camera off the modelled pole mesh so it
-    doesn't occlude the view).
+    ``yaw_offset_deg``, ``pitch_offset_deg``, ``roll_offset_deg``,
+    ``height_offset_m``, ``forward_offset_m``, and ``right_offset_m``. The
+    translations move the virtual camera away from modelled pole/tree meshes
+    and allow a full 6-DOF physical mounting calibration.
     """
     import carla
 
     twin_pose = camera.get("twin_pose") or {}
-    yaw = heading_to_carla_yaw(
-        float(camera["heading_deg"]),
-        float(camera["yaw_deg"]) + float(twin_pose.get("yaw_offset_deg", 0.0)),
-    )
-    pitch = float(camera["pitch_deg"]) + float(twin_pose.get("pitch_offset_deg", 0.0))
-
-    location = gps_to_carla(carla_map, site["lat"], site["lon"])
+    if require_opendrive_georeference or return_projection_provenance:
+        location, projection_provenance = gps_to_carla(
+            carla_map,
+            site["lat"],
+            site["lon"],
+            require_opendrive_georeference=require_opendrive_georeference,
+            return_projection_provenance=True,
+        )
+    else:
+        location = gps_to_carla(carla_map, site["lat"], site["lon"])
+        projection_provenance = None
     # gps_to_carla snaps z to the road surface; the camera sits on the
     # pole `height_m` above that.
-    location.z += float(camera["height_m"]) + float(twin_pose.get("height_offset_m", 0.0))
-
-    forward = float(twin_pose.get("forward_offset_m", 0.5))
-    if forward:
-        yaw_rad = math.radians(yaw)
-        location.x += forward * math.cos(yaw_rad)
-        location.y += forward * math.sin(yaw_rad)
-
-    rotation = carla.Rotation(pitch=pitch, yaw=yaw, roll=0.0)
-    return carla.Transform(location, rotation)
+    location.z += float(camera["height_m"])
+    base = {
+        "pitch_deg": float(camera["pitch_deg"]),
+        "yaw_deg": heading_to_carla_yaw(
+            float(camera["heading_deg"]), float(camera["yaw_deg"])
+        ),
+        "roll_deg": float(camera.get("roll_deg", 0.0)),
+        "fov_deg": horizontal_fov_deg(camera["intrinsics"]),
+    }
+    absolute = absolute_twin_model(
+        [location.x, location.y, location.z], base, twin_pose
+    )
+    location.x, location.y, location.z = absolute["location"]
+    rotation = carla.Rotation(
+        pitch=absolute["pitch_deg"],
+        yaw=absolute["yaw_deg"],
+        roll=absolute["roll_deg"],
+    )
+    transform = carla.Transform(location, rotation)
+    if return_projection_provenance:
+        return transform, projection_provenance
+    return transform
 
 
 class TwinCameraRig:
@@ -160,6 +286,7 @@ class TwinCameraRig:
         self._refused_cameras: Dict[str, str] = {}
         self._spawn_failures: Dict[str, str] = {}
         self._camera_model_errors: Dict[str, str] = {}
+        self._projection_provenance: Dict[str, dict] = {}
         self._lock = threading.Lock()
         self._accepting_frames = False
 
@@ -186,6 +313,7 @@ class TwinCameraRig:
         self._accepting_frames = True
         for camera in self._config["cameras"]:
             camera_id = camera["id"]
+            self._projection_provenance.pop(camera_id, None)
             if camera.get("twin_lens"):
                 self._refused_cameras[camera_id] = "lens_override_safety_hold"
                 logger.error(
@@ -194,16 +322,43 @@ class TwinCameraRig:
                     camera_id,
                 )
                 continue
-            camera_bp.set_attribute("image_size_x", str(self._image_width))
-            camera_bp.set_attribute("image_size_y", str(self._image_height))
-            camera_bp.set_attribute("fov", f"{horizontal_fov_deg(camera['intrinsics']):.2f}")
-            camera_bp.set_attribute("sensor_tick", f"{1.0 / self._fps:.4f}")
+            configure_twin_camera_blueprint(
+                camera_bp,
+                camera,
+                self._image_width,
+                self._image_height,
+                self._fps,
+            )
             try:
                 camera_bp.set_attribute("role_name", "twin_rig")
             except (IndexError, RuntimeError):
                 pass  # role_name attribute is optional on sensors
 
-            transform = compute_twin_camera_transform(self._map, site, camera)
+            strict_projection = not hasattr(
+                self._map, "geolocation_to_transform"
+            )
+            try:
+                if strict_projection:
+                    transform, projection = compute_twin_camera_transform(
+                        self._map,
+                        site,
+                        camera,
+                        require_opendrive_georeference=True,
+                        return_projection_provenance=True,
+                    )
+                    self._projection_provenance[camera_id] = dict(projection)
+                else:
+                    transform = compute_twin_camera_transform(
+                        self._map, site, camera
+                    )
+            except Exception as exc:
+                self._spawn_failures[camera_id] = "projection_gate_failed"
+                logger.error(
+                    "Twin camera %s strict map projection failed: %s",
+                    camera_id,
+                    exc,
+                )
+                continue
             try:
                 actor = self._world.spawn_actor(camera_bp, transform)
             except Exception as exc:
@@ -224,7 +379,7 @@ class TwinCameraRig:
                 transform.location.z,
                 transform.rotation.yaw,
                 transform.rotation.pitch,
-                horizontal_fov_deg(camera["intrinsics"]),
+                twin_horizontal_fov_deg(camera),
             )
 
         logger.info("Twin camera rig ready: %d cameras", len(self._cameras))
@@ -275,6 +430,7 @@ class TwinCameraRig:
             except Exception:
                 logger.debug("Twin camera %s already gone", camera_id)
         self._cameras.clear()
+        self._projection_provenance.clear()
         with self._lock:
             self._frames.clear()
             self._frame_metadata.clear()
@@ -380,6 +536,9 @@ class TwinCameraRig:
                 "horizontal_fov_deg": horizontal_fov,
             },
             "lens": {key: float(value) for key, value in lens.items()},
+            "projection": deepcopy(
+                self._projection_provenance.get(camera_id)
+            ),
         }
 
     def status(self) -> dict:
@@ -394,4 +553,5 @@ class TwinCameraRig:
             "refused_cameras": dict(self._refused_cameras),
             "spawn_failures": dict(self._spawn_failures),
             "camera_model_errors": dict(self._camera_model_errors),
+            "projection_provenance": deepcopy(self._projection_provenance),
         }

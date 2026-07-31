@@ -1,0 +1,12 @@
+[Unit]
+Description=Hourly rolling V2X detection corpus export
+
+[Timer]
+OnBootSec=10min
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+Unit=v2x-detection-corpus-export.service
+
+[Install]
+WantedBy=timers.target

@@ -1,6 +1,9 @@
 # Multi-Camera V2X Perception Pipeline
 
-A real-time, multi-camera object detection and localization system. It ingests video streams from wide-angle cameras, detects objects using YOLOv8, projects their 2D pixel positions into GPS coordinates using pinhole camera geometry, deduplicates cross-camera detections, and uploads structured records to a V2X (Vehicle-to-Everything) API.
+A real-time, multi-camera object detection and localization system. It ingests
+video streams from wide-angle cameras, detects objects, projects reviewed image
+contacts through a measured camera model and the map georeference, maintains
+uncertainty-aware identities, and uploads structured V2X records.
 
 This app is now merged into the V2X backend repo under `apps/perception`. The old
 `path2v2x/co-perception` checkout is no longer required for Path PC deployment.
@@ -61,9 +64,9 @@ http://<host>:8090/streams/ch4.mjpg
 
 `GET /health` reports service readiness plus per-camera source timestamps,
 frame age, frame count, reconnect state, and the last read/open error. A cached
-frame is never republished as fresh. For live HLS input, detection event
-timestamps come from current UTC wall time and remain monotonic across HLS
-session renewal; recorded files retain media-relative timestamps.
+frame is never republished as fresh. Production acceptance requires schema-v2
+event time derived from HLS `EXT-X-PROGRAM-DATE-TIME`; wall-clock fallback is
+untrusted and cannot support historical replay or calibration.
 
 Each live camera is read by an isolated worker, so an FFmpeg open/read timeout
 on one feed cannot block the other feeds. Kinesis stream names are resolved
@@ -109,6 +112,38 @@ new local track on the same camera) receive distinct global IDs until an
 independently validated vehicle-ReID/geometric linker is deployed. Set
 `V2X_PERCEPTION_CROSS_CAMERA_VEHICLE_ASSOCIATION=true` only inside an explicit
 candidate gate; the legacy 30 m/40 s spatial heuristic is not acceptance-grade.
+
+## Acceptance-grade calibration and mapping
+
+The later `pitch_yaw_minimize.py`, flat-earth diagrams, and legacy CSV examples
+in this README document the imported co-perception prototype only. They are not
+an acceptance or deployment workflow: they share nominal intrinsics, assume
+zero distortion and 7 m height, fit only pitch/yaw, and do not provide an
+independent holdout.
+
+Use the fail-closed offline chain instead:
+
+1. `tools/export_detection_corpus.py` freezes a sanitized, paginated, hash-bound
+   API window and reconciles it with the timeline count.
+2. `tools/build_detection_observation_ledger.py` retains pixels and provenance
+   while quarantining stored GPS/local-XZ as a derived baseline.
+3. `tools/verify_historical_correlation.py` reconstructs the exact archived HLS
+   frame for each trusted event.
+4. `tools/apply_ground_contact_reviews.py` accepts only named-human wheel/road
+   contacts bound to that retained frame and verifier report.
+5. `tools/propose_detection_tracklets.py`, `tools/apply_tracklet_reviews.py`,
+   and `tools/freeze_track_split.py` create reviewed whole-object tracklets and
+   an immutable later-day holdout without promoting model identity to truth.
+6. `tools/fit_detection_factor_graph.py` enforces per-camera excitation and
+   split-leakage gates, then optionally runs the bounded diagnostic trajectory
+   fit around a surveyed static solution and surveyed lane map.
+
+The diagnostic fit never edits camera configuration and always reports
+`acceptance_eligible=false`. Production still requires measured per-camera
+intrinsics/distortion, surveyed 6-DoF/static/lane evidence, locked held-out
+reprojection, whole-track bootstrap, RTK same-car truth, and all-four-camera UE5
+visual proof. Stored GPS, current actor positions, and lane-snapped locations
+must never be used as optimizer labels.
 
 ---
 

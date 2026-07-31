@@ -50,7 +50,21 @@ sudo systemctl stop \
   v2x-hourly-drive-restart.timer
 ```
 
-Capture a new rollback bundle in addition to the existing repository backup:
+Capture a new rollback bundle in addition to the existing repository backup.
+The tracked helper is plan-only by default, refuses capture while any
+mutation-capable timer is active, records all three perception model assets,
+and can rehearse repository restoration in an isolated clone:
+
+```bash
+scripts/capture-v2x-rollback.sh
+ACTION=capture scripts/capture-v2x-rollback.sh
+ACTION=verify BUNDLE=/home/path/V2XCarla/v2x-backend-backups/v2x-rollback-<UTC> \
+  scripts/capture-v2x-rollback.sh
+```
+
+The commands below document the bundle contents and remain useful for manual
+inspection. Do not stash the live checkout until the tracked bundle has passed
+`ACTION=verify`:
 
 ```bash
 set -euo pipefail
@@ -112,6 +126,7 @@ Static validation before install:
 bash -n infra/aws-cli/provision-read-api.sh infra/amplify/deploy.sh scripts/*.sh
 shellcheck -x infra/aws-cli/provision-read-api.sh infra/amplify/deploy.sh scripts/*.sh
 scripts/tests/test-recovery-infra.sh
+scripts/tests/test-rollback-bundle.sh
 scripts/run-carla-rr.sh validate
 ```
 
@@ -388,6 +403,42 @@ Quick mode derives the live hostname from the tunnel log. Named mode loads
 `DRIVE_WS_URL` in the link-health file takes precedence. Keep repair disabled
 until the route/object rollback gate has passed.
 
+### Rolling detection corpus export
+
+`v2x-detection-corpus-export.timer` is an optional read-only hourly snapshot of
+the public 24-hour detection window. It atomically writes sanitized range pages,
+timeline reconciliation, canonical NDJSON, and SHA-256 manifests under
+`/home/path/V2XCarla/v2x-evidence/detection-corpus`. It never retains URL query
+strings and its output is explicitly ineligible as calibration truth because
+GPS/CARLA positions are derived from the active camera model.
+
+Test the tracked exporter manually before installing either unit:
+
+```bash
+/home/path/V2XCarla/perception-venv/bin/python \
+  apps/perception/tools/export_detection_corpus.py \
+  https://w0j9m7dgpg.execute-api.us-west-1.amazonaws.com \
+  /home/path/V2XCarla/v2x-evidence/detection-corpus
+```
+
+Only after the snapshot manifest reconciles with `/detections/timeline`:
+
+```bash
+sudo install -m 0644 scripts/systemd/v2x-detection-corpus-export.service \
+  /etc/systemd/system/
+sudo install -m 0644 scripts/systemd/v2x-detection-corpus-export.timer \
+  /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now v2x-detection-corpus-export.timer
+```
+
+This timer does not authorize frame extraction, retention-policy changes, or
+deployment of a fitted calibration. The tracked unit applies a fixed 72-snapshot
+(three-day) retention bound, `UMask=0077`, a 15-minute runtime ceiling, and a
+write allowlist limited to the corpus root. Copy any snapshot selected for
+review or holdout to separately retained immutable evidence before it ages out.
+Changing that policy remains a separate gate.
+
 ## Acceptance evidence
 
 Require all of the following before restoring timers:
@@ -413,10 +464,12 @@ DRIVE_LINK_HEALTH_REPAIR=false scripts/check-drive-frontend-link.sh
 
 Perception passes only when `/health` reports `status=ok`, `ready=true`, and
 fresh/streaming ch1-ch4 across repeated samples; HTTP 200 or MJPEG bytes alone
-are insufficient. For live HLS, `timestamp_utc` represents Path-PC decode
-receipt time, not authoritative camera capture time or HLS program date-time.
-Require it to advance monotonically and remain close to ingestion time without
-claiming end-to-end capture latency. Run `verify_live_feeds.py` against both the
+are insufficient. Acceptance records use schema-v2 trusted HLS
+`EXT-X-PROGRAM-DATE-TIME`: `timestamp_utc` must equal
+`media_timestamp_utc`, `media_time_trusted=true`, and the persisted media-clock
+anchor/position must reconstruct that timestamp. Wall-clock fallback is
+untrusted and cannot support archive replay or calibration. Run
+`verify_live_feeds.py` against both the
 local origin and browser-selected public HTTPS origin; it samples timestamps
 twice and compares two complete JPEG hashes for ch1-ch4. The link-health timer
 is not a substitute. After uploads are explicitly enabled, require a new

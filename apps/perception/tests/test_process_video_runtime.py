@@ -1,10 +1,13 @@
 import sys
 import copy
+import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import threading
+import tempfile
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -15,6 +18,7 @@ import numpy as np
 PERCEPTION_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PERCEPTION_DIR))
 
+import process_video  # noqa: E402
 from live_capture import bounded_frame_identity  # noqa: E402
 from process_video import (  # noqa: E402
     _BOUNDED_DIAGNOSTIC_FRAME_LIMIT,
@@ -22,6 +26,7 @@ from process_video import (  # noqa: E402
     _BOUNDED_DIAGNOSTIC_THREAD_LIMIT,
     _COOPERATIVE_SHUTDOWN_CEILING_SECONDS,
     _COOPERATIVE_SHUTDOWN_MARGIN_SECONDS,
+    DETECTION_TTL_SECONDS,
     _OUTER_SHUTDOWN_RESERVE_SECONDS,
     _emit_bounded_shutdown_diagnostics,
     _live_pipeline_shutdown_timeout_seconds,
@@ -30,7 +35,13 @@ from process_video import (  # noqa: E402
     VideoObjectDetector,
     attach_media_clock_metadata,
     assess_media_clock,
+    camera_intrinsics_evidence,
+    camera_localization_parameters,
+    detector_config_fingerprint,
+    load_cameras_config,
     records_ready_for_upload,
+    snapshot_detector_model,
+    vehicle_localization_acceptable,
 )
 from ffmpeg_capture import (  # noqa: E402
     NVDEC_CAPTURE_RELEASE_WAIT_RESERVE_SECONDS,
@@ -46,6 +57,217 @@ class FrameIdentityTests(unittest.TestCase):
         changed = frame.copy()
         changed[61:68, 93:100] = 255
         self.assertNotEqual(identity, bounded_frame_identity(changed))
+
+    def test_detector_config_fingerprint_is_stable_and_configuration_bound(self):
+        first = detector_config_fingerprint("a" * 64, 0.5)
+        self.assertEqual(first, detector_config_fingerprint("a" * 64, 0.5))
+        self.assertNotEqual(first, detector_config_fingerprint("a" * 64, 0.6))
+        self.assertNotEqual(first, detector_config_fingerprint("b" * 64, 0.5))
+
+    def test_detector_workers_load_only_one_content_addressed_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "mutable-model.pt"
+            source.write_bytes(b"pinned-model-bytes")
+            snapshot, digest = snapshot_detector_model(source, root / "snapshots")
+            self.assertNotEqual(snapshot, source)
+            self.assertEqual(
+                digest, hashlib.sha256(b"pinned-model-bytes").hexdigest()
+            )
+            source.write_bytes(b"later-original-replacement")
+            loaded = []
+
+            class Model:
+                names = {}
+
+            with patch.object(
+                process_video, "YOLO",
+                side_effect=lambda path: (loaded.append(path), Model())[1],
+            ):
+                process_video.load_verified_detector_model(snapshot, digest)
+                process_video.load_verified_detector_model(snapshot, digest)
+            self.assertEqual(loaded, [str(snapshot), str(snapshot)])
+
+    def test_detector_snapshot_replacement_during_load_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "model.pt"
+            source.write_bytes(b"exact-model")
+            snapshot, digest = snapshot_detector_model(source, root / "snapshots")
+
+            def replace_snapshot(path):
+                replacement = Path(path).with_suffix(".replacement")
+                replacement.write_bytes(b"different-model")
+                os.replace(replacement, path)
+                return object()
+
+            with patch.object(process_video, "YOLO", side_effect=replace_snapshot):
+                with self.assertRaisesRegex(RuntimeError, "changed during load"):
+                    process_video.load_verified_detector_model(snapshot, digest)
+
+
+class WorldLocalizationUncertaintyTests(unittest.TestCase):
+    @staticmethod
+    def detector(calibration_uncertainty_m=0.25):
+        detector = object.__new__(VideoObjectDetector)
+        detector.K = np.array(
+            [[1000.0, 0.0, 500.0], [0.0, 1000.0, 500.0], [0.0, 0.0, 1.0]]
+        )
+        detector.dist_coeffs = np.zeros(5)
+        detector.camera_height = 7.0
+        detector.fx = detector.fy = 1000.0
+        detector.cx = detector.cy = 500.0
+        detector.R = np.eye(3)
+        detector.localization_pixel_sigma = 4.0
+        detector.calibration_uncertainty_m = calibration_uncertainty_m
+        return detector
+
+    def test_world_uncertainty_uses_two_pixel_axes_and_calibration_error(self):
+        world = self.detector().compute_world_coordinates(600.0, 900.0)
+        self.assertIsNotNone(world)
+        self.assertTrue(math.isfinite(world["uncertainty_meters"]))
+        components = world["uncertainty_components"]
+        self.assertEqual(components["pixel_sigma"], 4.0)
+        self.assertGreater(components["pixel_meters"], 0.0)
+        self.assertEqual(components["calibration_meters"], 0.25)
+        self.assertGreaterEqual(world["uncertainty_meters"], 0.25)
+
+    def test_missing_calibration_or_horizon_geometry_is_infinite(self):
+        missing = self.detector(float("inf")).compute_world_coordinates(600.0, 900.0)
+        horizon = self.detector().compute_world_coordinates(500.0, 501.0)
+        self.assertIsNone(missing["uncertainty_meters"])
+        self.assertIsNone(missing["uncertainty_components"]["calibration_meters"])
+        self.assertIsNone(horizon["uncertainty_meters"])
+        self.assertIsNone(horizon["uncertainty_components"]["pixel_meters"])
+
+    def test_missing_or_unbounded_camera_calibration_blocks_startup(self):
+        with self.assertRaisesRegex(ValueError, "no measured localization"):
+            camera_localization_parameters({"id": "ch1"})
+        with self.assertRaisesRegex(ValueError, "invalid"):
+            camera_localization_parameters({
+                "id": "ch1",
+                "localization": {
+                    "pixel_sigma": 4.0,
+                    "calibration_uncertainty_m": 2.01,
+                },
+            })
+        self.assertEqual(
+            camera_localization_parameters({
+                "id": "ch1",
+                "localization": {
+                    "pixel_sigma": 4.0,
+                    "calibration_uncertainty_m": 0.75,
+                },
+            }),
+            (4.0, 0.75),
+        )
+
+    def test_camera_config_is_mandatory_unless_legacy_dev_flag_is_explicit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = str(Path(directory) / "missing.json")
+            with patch.dict(os.environ, {"V2X_CAMERAS_JSON": missing}, clear=False):
+                os.environ.pop("V2X_ALLOW_LEGACY_CAMERA_CONFIG", None)
+                with self.assertRaisesRegex(RuntimeError, "required cameras config"):
+                    load_cameras_config()
+            with patch.dict(
+                os.environ,
+                {
+                    "V2X_CAMERAS_JSON": missing,
+                    "V2X_ALLOW_LEGACY_CAMERA_CONFIG": "true",
+                },
+                clear=False,
+            ):
+                self.assertIsNone(load_cameras_config())
+
+    def test_measured_intrinsics_are_required_and_return_distortion(self):
+        camera = {
+            "id": "ch1",
+            "intrinsics": {
+                "fx": 1000.0,
+                "fy": 1001.0,
+                "cx": 500.0,
+                "cy": 400.0,
+                "width": 1000,
+                "height": 800,
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "no measured intrinsics"):
+            camera_intrinsics_evidence(camera)
+        hashes = [f"{index:064x}" for index in range(1, 11)]
+        camera["intrinsics_calibration"] = {
+            "method": "charuco",
+            "artifact_sha256": "a" * 64,
+            "source_images_sha256": hashes,
+            "image_count": 10,
+            "rms_reprojection_error_px": 0.5,
+            "resolution": [1000, 800],
+            "camera_matrix": [
+                [1000.0, 0.0, 500.0],
+                [0.0, 1001.0, 400.0],
+                [0.0, 0.0, 1.0],
+            ],
+            "distortion": {
+                "k1": -0.1,
+                "k2": 0.01,
+                "p1": 0.001,
+                "p2": -0.002,
+                "k3": 0.0,
+            },
+        }
+        distortion = camera_intrinsics_evidence(camera)
+        np.testing.assert_allclose(
+            distortion, [-0.1, 0.01, 0.001, -0.002, 0.0]
+        )
+        with self.assertRaisesRegex(ValueError, "artifact path"):
+            camera_intrinsics_evidence(
+                camera,
+                evidence_root=Path("/tmp"),
+                require_artifacts=True,
+            )
+
+    def test_emits_non_circular_raw_observation_provenance(self):
+        detector = self.detector()
+        detector.origin_lat = 37.9
+        detector.origin_lon = -122.3
+        detector.heading_deg = 0.0
+        detector.device_id = "cam-001-ch1"
+        detector.city = "Richmond"
+        detector.state = "CA"
+        detector.country = "USA"
+        detector.image_width = 1000
+        detector.image_height = 800
+        detector.cameras_json_sha256 = "a" * 64
+        detector.camera_config_sha256 = "b" * 64
+        detector.detector_model_sha256 = "c" * 64
+        detector.detector_config_sha256 = "d" * 64
+        record = detector.compute_3d_detections(
+            [
+                {
+                    "center": {"x": 600.0, "y": 700.0},
+                    "bbox": {
+                        "x1": 550.0,
+                        "y1": 600.0,
+                        "x2": 650.0,
+                        "y2": 790.0,
+                    },
+                    "class_name": "car",
+                    "confidence": 0.9,
+                    "frame": 5,
+                    "track_id": 7,
+                }
+            ],
+            "2026-07-11T03:32:21.022Z",
+            1783740741,
+        )[0]
+        raw = record["raw_observation"]
+        self.assertEqual(raw["ground_contact"]["pixel"], [600.0, 790.0])
+        self.assertFalse(raw["ground_contact"]["reviewed"])
+        self.assertTrue(
+            raw["optimizer_contract"]["gps_location_is_derived_baseline"]
+        )
+        self.assertFalse(raw["optimizer_contract"]["acceptance_eligible"])
+        self.assertEqual(raw["fingerprints"]["camera_config_sha256"], "b" * 64)
+        self.assertEqual(raw["fingerprints"]["detector_config_sha256"], "d" * 64)
 
 
 class FrameBroadcasterTests(unittest.TestCase):
@@ -443,6 +665,7 @@ class MediaClockPersistenceTests(unittest.TestCase):
                 "media_clock": {
                     "source": "hls_ext_x_program_date_time",
                     "schema_version": 1,
+                    "session_id": "session-frag-123",
                     "anchor_program_date_time_utc": (
                         "2026-07-10T03:57:23.138Z"
                     ),
@@ -477,6 +700,7 @@ class MediaClockPersistenceTests(unittest.TestCase):
                 "media_clock": {
                     "source": "hls_ext_x_program_date_time",
                     "schema_version": 1,
+                    "session_id": "session-transport-1",
                     "anchor_program_date_time_utc": (
                         "2026-07-10T03:57:23.138Z"
                     ),
@@ -522,6 +746,7 @@ class MediaClockPersistenceTests(unittest.TestCase):
                 "media_clock": {
                     "source": "hls_ext_x_program_date_time",
                     "schema_version": 1,
+                    "session_id": "session-inconsistent-anchor",
                     "anchor_program_date_time_utc": "2026-07-10T03:57:23.138Z",
                     "anchor_fragment_id": "frag-123",
                     "position_milliseconds": 250.5,
@@ -543,6 +768,10 @@ class MediaClockPersistenceTests(unittest.TestCase):
             record["ts_event"], "2026-07-10T03:57:23.388Z#event-1"
         )
         self.assertEqual(record["media_clock_status"], "matched")
+        self.assertEqual(
+            record["expires_at"],
+            1_783_655_843 + DETECTION_TTL_SECONDS,
+        )
         self.assertEqual(
             record["media_clock"]["anchor_match_frame_count"], 3
         )
@@ -584,6 +813,7 @@ class MediaClockPersistenceTests(unittest.TestCase):
                 "media_clock": {
                     "source": "hls_ext_x_program_date_time",
                     "schema_version": 1,
+                    "session_id": "session-inconsistent-provenance",
                     "anchor_program_date_time_utc": "2026-07-10T03:57:20.000Z",
                     "position_milliseconds": 100.0,
                 },
@@ -609,21 +839,48 @@ class MediaClockPersistenceTests(unittest.TestCase):
         self.assertEqual(records_ready_for_upload(records, True), [trusted])
         self.assertEqual(records_ready_for_upload(records, False), records)
 
+    def test_live_vehicle_upload_requires_bounded_localization_uncertainty(self):
+        trusted = {
+            "object_type": "car",
+            "timestamp_schema_version": 2,
+            "media_time_trusted": True,
+            "camera_data": {
+                "bifocal_metadata": {
+                    "world_position": {"uncertainty_meters": 0.75}
+                }
+            },
+        }
+        self.assertTrue(vehicle_localization_acceptable(trusted))
+        self.assertEqual(records_ready_for_upload([trusted], True), [trusted])
+        for value in (None, float("inf"), 2.01):
+            candidate = copy.deepcopy(trusted)
+            candidate["camera_data"]["bifocal_metadata"]["world_position"][
+                "uncertainty_meters"
+            ] = value
+            self.assertFalse(vehicle_localization_acceptable(candidate))
+            self.assertEqual(records_ready_for_upload([candidate], True), [])
+
 
 class RunScopedIdentityTests(unittest.TestCase):
     @staticmethod
-    def pipeline(run_id):
+    def pipeline(run_id, cross_camera_vehicle_association=False):
         pipeline = object.__new__(MultiCameraPipeline)
         pipeline.global_tracks = {}
         pipeline.local_to_global = {}
         pipeline.next_global_id = 0
         pipeline.perception_run_id = run_id
         pipeline.perception_run_prefix = run_id.replace("-", "")[:8]
-        pipeline.cross_camera_vehicle_association = False
+        pipeline.cross_camera_vehicle_association = bool(
+            cross_camera_vehicle_association
+        )
         return pipeline
 
     @staticmethod
-    def detection(camera="ch1", confidence=0.8, media_timestamp="first"):
+    def detection(
+        camera="ch1",
+        confidence=0.8,
+        media_timestamp="2026-07-10T00:00:00.000Z",
+    ):
         return {
             "event_id": f"event-{camera}",
             "object_id": f"car_{camera}_7",
@@ -635,8 +892,19 @@ class RunScopedIdentityTests(unittest.TestCase):
             "embedding": None,
             "timestamp_utc": media_timestamp,
             "media_timestamp_utc": media_timestamp,
-            "media_clock": {"source": "hls_ext_x_program_date_time"},
-            "camera_data": {"bifocal_metadata": {"bbox": {}}},
+            "timestamp_schema_version": 2,
+            "media_time_trusted": True,
+            "media_clock_status": "matched",
+            "media_clock": {
+                "source": "hls_ext_x_program_date_time",
+                "schema_version": 1,
+            },
+            "camera_data": {
+                "bifocal_metadata": {
+                    "bbox": {},
+                    "world_position": {"uncertainty_meters": 0.25},
+                }
+            },
         }
 
     def test_same_local_track_in_different_runs_gets_different_global_id(self):
@@ -655,20 +923,61 @@ class RunScopedIdentityTests(unittest.TestCase):
         self.assertEqual(first["perception_run_id"], run_one)
         self.assertEqual(first["track_id"], 7)
 
+    def test_vehicle_embedding_cache_never_aliases_missing_track_ids(self):
+        pipeline = self.pipeline("123e4567-e89b-12d3-a456-426614174000")
+        pipeline.vehicle_embedding_cache = {}
+        pipeline.vehicle_extractor = Mock()
+        pipeline.vehicle_extractor.extract.side_effect = [
+            np.array([1.0, 0.0]),
+            np.array([0.0, 1.0]),
+        ]
+        detection = self.detection()
+        detection["track_id"] = None
+        frame = np.zeros((32, 32, 3), dtype=np.uint8)
+        first = pipeline._vehicle_embedding(frame, detection, 1)
+        second = pipeline._vehicle_embedding(frame, detection, 2)
+        self.assertFalse(np.array_equal(first, second))
+        self.assertEqual(pipeline.vehicle_embedding_cache, {})
+
     def test_cross_camera_winner_keeps_one_consistent_media_observation(self):
         run_id = "123e4567-e89b-12d3-a456-426614174000"
-        pipeline = self.pipeline(run_id)
-        pipeline.cross_camera_vehicle_association = True
-        older = self.detection("ch1", 0.7, "older")
-        winner = self.detection("ch2", 0.9, "winner")
+        pipeline = self.pipeline(run_id, True)
+        older = self.detection("ch1", 0.7, "2026-07-10T00:00:00.000Z")
+        winner = self.detection("ch2", 0.9, "2026-07-10T00:00:00.100Z")
+        older["embedding"] = np.array([1.0, 0.0])
+        winner["embedding"] = np.array([0.95, 0.05])
+        winner["embedding"] /= np.linalg.norm(winner["embedding"])
         result = pipeline.deduplicate(
             [copy.deepcopy(older), copy.deepcopy(winner)], 1_000.0
         )[0]
 
         self.assertEqual(result["device_id"], "ch2")
-        self.assertEqual(result["timestamp_utc"], "winner")
-        self.assertEqual(result["media_timestamp_utc"], "winner")
+        self.assertEqual(result["timestamp_utc"], "2026-07-10T00:00:00.100Z")
+        self.assertEqual(
+            result["media_timestamp_utc"], "2026-07-10T00:00:00.100Z"
+        )
         self.assertEqual(result["event_id"], "event-ch2")
+        self.assertEqual(
+            result["cross_camera_dedup"]["method"],
+            "spatiotemporal_convnext",
+        )
+        self.assertGreaterEqual(
+            result["cross_camera_dedup"]["appearance_similarity"], 0.60
+        )
+
+    def test_close_cross_camera_vehicles_require_appearance_evidence(self):
+        pipeline = self.pipeline("123e4567-e89b-12d3-a456-426614174000", True)
+        first = self.detection("ch1", 0.9, "2026-07-10T00:00:00.000Z")
+        second = self.detection("ch2", 0.9, "2026-07-10T00:00:00.100Z")
+        result = pipeline.deduplicate([copy.deepcopy(first), copy.deepcopy(second)], 1_000.0)
+        self.assertEqual(len(result), 2)
+
+        first["embedding"] = np.array([1.0, 0.0])
+        second["embedding"] = np.array([0.0, 1.0])
+        result = self.pipeline(
+            "123e4567-e89b-12d3-a456-426614174000", True
+        ).deduplicate([first, second], 1_000.0)
+        self.assertEqual(len(result), 2)
 
     def test_same_camera_new_track_cannot_inherit_existing_global_id(self):
         run_id = "123e4567-e89b-12d3-a456-426614174000"
@@ -711,6 +1020,188 @@ class RunScopedIdentityTests(unittest.TestCase):
             {item["object_id"] for item in result},
             {"global_car_123e4567_1", "global_car_123e4567_2"},
         )
+
+    def test_distinct_vehicles_seven_meters_apart_are_not_merged(self):
+        pipeline = self.pipeline("123e4567-e89b-12d3-a456-426614174000", True)
+        first = self.detection("ch1", 0.9, "2026-07-10T00:00:00.000Z")
+        second = self.detection("ch2", 0.9, "2026-07-10T00:00:00.100Z")
+        second["gps_location"]["latitude"] += 7.0 / 111_320.0
+        result = pipeline.deduplicate([first, second], 1_000.0)
+        self.assertEqual(len(result), 2)
+        self.assertNotEqual(result[0]["object_id"], result[1]["object_id"])
+
+    def test_equally_plausible_adjacent_vehicles_fail_identity_closed(self):
+        first = self.detection("ch1")
+        second = self.detection("ch2")
+        third = self.detection("ch3")
+        second["gps_location"]["latitude"] += 4.0 / 111_320.0
+        third["gps_location"]["latitude"] += 2.0 / 111_320.0
+        for detection in (first, second, third):
+            detection["embedding"] = np.array([1.0, 0.0])
+        result = self.pipeline(
+            "123e4567-e89b-12d3-a456-426614174000", True
+        ).deduplicate([first, second, third], 1_000.0)
+        self.assertEqual(len(result), 3)
+        ambiguous = next(item for item in result if item["device_id"] == "ch3")
+        self.assertEqual(
+            ambiguous["identity_ambiguity"]["method"],
+            "ambiguous_spatiotemporal_convnext",
+        )
+        self.assertEqual(
+            ambiguous["identity_association"]["method"], "new_track"
+        )
+
+    def test_third_candidate_with_conflicting_appearance_fails_closed(self):
+        pipeline = self.pipeline("123e4567-e89b-12d3-a456-426614174000")
+        candidates = [
+            {
+                "distance_meters": 0.3,
+                "appearance_similarity": 0.62,
+                "record": {"device_id": "ch1", "object_id": "car-1"},
+            },
+            {
+                "distance_meters": 1.9,
+                "appearance_similarity": 0.60,
+                "record": {"device_id": "ch2", "object_id": "car-2"},
+            },
+            {
+                "distance_meters": 2.0,
+                "appearance_similarity": 0.95,
+                "record": {"device_id": "ch3", "object_id": "car-3"},
+            },
+        ]
+
+        selected, ambiguity = pipeline._select_unambiguous_vehicle_candidate(
+            candidates
+        )
+
+        self.assertIsNone(selected)
+        self.assertEqual(
+            ambiguity["method"], "ambiguous_spatiotemporal_convnext"
+        )
+        self.assertEqual(len(ambiguity["candidates"]), 3)
+
+    def test_ambiguous_temporal_reattachment_starts_distinct_track(self):
+        pipeline = self.pipeline("123e4567-e89b-12d3-a456-426614174000", True)
+        first = self.detection("ch1")
+        second = self.detection("ch2")
+        second["gps_location"]["latitude"] += 4.0 / 111_320.0
+        first["embedding"] = second["embedding"] = np.array([1.0, 0.0])
+        initial = pipeline.deduplicate([first, second], 1_000.0)
+        self.assertEqual(len({item["object_id"] for item in initial}), 2)
+
+        third = self.detection(
+            "ch3", media_timestamp="2026-07-10T00:00:01.000Z"
+        )
+        third["track_id"] = 99
+        third["gps_location"]["latitude"] += 2.0 / 111_320.0
+        third["embedding"] = np.array([1.0, 0.0])
+        result = pipeline.deduplicate([third], 1_001.0)[0]
+        self.assertNotIn(result["object_id"], {
+            item["object_id"] for item in initial
+        })
+        self.assertEqual(
+            result["identity_ambiguity"]["method"],
+            "ambiguous_track_reattachment",
+        )
+
+    def test_cross_camera_observations_outside_media_window_are_not_merged(self):
+        pipeline = self.pipeline("123e4567-e89b-12d3-a456-426614174000", True)
+        first = self.detection("ch1", 0.9, "2026-07-10T00:00:00.000Z")
+        second = self.detection("ch2", 0.9, "2026-07-10T00:00:04.000Z")
+        result = pipeline.deduplicate([first, second], 1_000.0)
+        self.assertEqual(len(result), 2)
+
+    def test_cross_camera_vehicles_without_trusted_time_are_not_merged(self):
+        first = self.detection("ch1")
+        second = self.detection("ch2")
+        first["embedding"] = second["embedding"] = np.array([1.0, 0.0])
+        second.pop("media_time_trusted")
+        result = self.pipeline(
+            "123e4567-e89b-12d3-a456-426614174000", True
+        ).deduplicate([first, second], 1_000.0)
+        self.assertEqual(len(result), 2)
+
+    def test_high_or_missing_uncertainty_cannot_merge_vehicles(self):
+        for uncertainty in (None, 999.0):
+            first = self.detection("ch1")
+            second = self.detection("ch2")
+            first["embedding"] = second["embedding"] = np.array([1.0, 0.0])
+            world = second["camera_data"]["bifocal_metadata"]["world_position"]
+            if uncertainty is None:
+                world.pop("uncertainty_meters")
+            else:
+                world["uncertainty_meters"] = uncertainty
+            result = self.pipeline(
+                "123e4567-e89b-12d3-a456-426614174000", True
+            ).deduplicate([first, second], 1_000.0)
+            self.assertEqual(len(result), 2)
+
+    def test_temporal_cross_camera_track_requires_matching_vehicle_embedding(self):
+        pipeline = self.pipeline("123e4567-e89b-12d3-a456-426614174000", True)
+        first = self.detection("ch1", 0.9, "2026-07-10T00:00:00.000Z")
+        first["embedding"] = np.array([1.0, 0.0])
+        first_result = pipeline.deduplicate([first], 1_000.0)[0]
+
+        mismatch = self.detection("ch2", 0.9, "2026-07-10T00:00:01.000Z")
+        mismatch["embedding"] = np.array([0.0, 1.0])
+        mismatch_result = pipeline.deduplicate([mismatch], 1_001.0)[0]
+        self.assertNotEqual(first_result["object_id"], mismatch_result["object_id"])
+
+        matching_pipeline = self.pipeline(
+            "abcdef01-e89b-12d3-a456-426614174000", True
+        )
+        first = self.detection("ch1", 0.9, "2026-07-10T00:00:00.000Z")
+        first["embedding"] = np.array([1.0, 0.0])
+        first_result = matching_pipeline.deduplicate([first], 2_000.0)[0]
+        match = self.detection("ch2", 0.9, "2026-07-10T00:00:01.000Z")
+        match["embedding"] = np.array([0.95, 0.05])
+        match["embedding"] /= np.linalg.norm(match["embedding"])
+        match_result = matching_pipeline.deduplicate([match], 2_001.0)[0]
+        self.assertEqual(first_result["object_id"], match_result["object_id"])
+        self.assertEqual(
+            match_result["identity_association"]["method"],
+            "cross_camera_spatiotemporal_convnext",
+        )
+        self.assertGreaterEqual(
+            match_result["identity_association"]["appearance_similarity"], 0.60
+        )
+
+    def test_same_camera_vehicle_reattachment_requires_appearance_after_id_change(self):
+        pipeline = self.pipeline("123e4567-e89b-12d3-a456-426614174000", True)
+        first = self.detection("ch1", 0.9, "2026-07-10T00:00:00.000Z")
+        first["embedding"] = np.array([1.0, 0.0])
+        first_result = pipeline.deduplicate([first], 1_000.0)[0]
+        second = self.detection("ch1", 0.9, "2026-07-10T00:00:01.000Z")
+        second["track_id"] = 8
+        second["embedding"] = np.array([0.0, 1.0])
+        second_result = pipeline.deduplicate([second], 1_001.0)[0]
+        self.assertNotEqual(first_result["object_id"], second_result["object_id"])
+
+    def test_vehicle_class_conflict_is_recorded_without_masking_observation(self):
+        pipeline = self.pipeline("123e4567-e89b-12d3-a456-426614174000", True)
+        first = self.detection("ch1")
+        first["embedding"] = np.array([1.0, 0.0])
+        first_result = pipeline.deduplicate([first], 1_000.0)[0]
+        second = self.detection("ch2", media_timestamp="2026-07-10T00:00:01.000Z")
+        second["object_type"] = "truck"
+        second["track_id"] = 9
+        second["embedding"] = np.array([1.0, 0.0])
+        second_result = pipeline.deduplicate([second], 1_001.0)[0]
+        self.assertEqual(second_result["object_id"], first_result["object_id"])
+        self.assertEqual(second_result["object_type"], "truck")
+        self.assertEqual(
+            second_result["identity_association"]["class_conflict"],
+            {"track_type": "car", "observed_type": "truck"},
+        )
+
+    def test_stale_tracks_and_local_aliases_are_pruned(self):
+        pipeline = self.pipeline("123e4567-e89b-12d3-a456-426614174000")
+        pipeline.deduplicate([self.detection()], 1_000.0)
+        self.assertTrue(pipeline.global_tracks)
+        pipeline.deduplicate([], 1_000.0 + pipeline.TRACK_MAX_IDLE_SEC + 0.1)
+        self.assertEqual(pipeline.global_tracks, {})
+        self.assertEqual(pipeline.local_to_global, {})
 
 
 class BatchUploadTests(unittest.TestCase):

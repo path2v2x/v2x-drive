@@ -11,6 +11,7 @@ import hashlib
 import inspect
 from itertools import islice
 import math
+import secrets
 import threading
 import time
 
@@ -1522,6 +1523,30 @@ class LiveStreamReader:
         )
         self._consecutive_duplicate_frames = 0
         self._last_transport_diagnostic = None
+        self._capture_session_counter = 0
+
+    def _new_capture_session_id(self):
+        """Issue an unguessable id for one actual decoder/source lifetime."""
+        self._capture_session_counter += 1
+        return (
+            "capture-v1-"
+            f"{self._capture_session_counter:016x}-"
+            f"{time.monotonic_ns():016x}-"
+            f"{secrets.token_hex(16)}"
+        )
+
+    @staticmethod
+    def _bind_capture_session(frame_media_clock, capture_session_id):
+        if not isinstance(frame_media_clock, dict):
+            return frame_media_clock
+        bound = dict(frame_media_clock)
+        raw_clock = bound.get("media_clock")
+        if not isinstance(raw_clock, dict):
+            return None
+        raw_clock = dict(raw_clock)
+        raw_clock["session_id"] = capture_session_id
+        bound["media_clock"] = raw_clock
+        return bound
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -2035,6 +2060,7 @@ class LiveStreamReader:
                 )
                 if cap is None or not cap.isOpened():
                     raise RuntimeError("capture open failed")
+                capture_session_id = self._new_capture_session_id()
                 if self.media_clock_source_factory is not None:
                     source = None
                 if self.media_clock_factory is None:
@@ -2181,6 +2207,7 @@ class LiveStreamReader:
                                 raise previous_release_errors[0]
                             raise RuntimeError("old capture release failed")
                         cap = replacement
+                        capture_session_id = self._new_capture_session_id()
                         if prepared_owner is not None:
                             prepared_owner.adopt()
                         if clock_resolution is not None:
@@ -2425,6 +2452,10 @@ class LiveStreamReader:
                             )
                         except (AttributeError, TypeError, ValueError):
                             frame_media_clock = None
+                    if frame_media_clock is not None:
+                        frame_media_clock = self._bind_capture_session(
+                            frame_media_clock, capture_session_id
+                        )
                     if (
                         frame_media_clock is not None
                         and self.media_clock_validator is not None

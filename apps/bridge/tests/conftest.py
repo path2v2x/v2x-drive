@@ -123,6 +123,9 @@ class MockActor:
         self.attributes: dict[str, str] = {}
         self.physics_enabled = True
         self._listener = None
+        self.bounding_box = types.SimpleNamespace(
+            extent=MockLocation(x=2.35, y=0.95, z=0.8)
+        )
 
     def listen(self, callback) -> None:
         self._listener = callback

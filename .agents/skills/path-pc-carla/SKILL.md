@@ -7,18 +7,100 @@ description: Operate and diagnose the Path PC CARLA/V2X stack at path@100.72.252
 
 Treat this file as an operating procedure, not proof of current state. Re-run the read-only baseline before every intervention.
 
+## Newest strict-calibration execution state
+
+Observed through 2026-07-14 17:00 UTC; verify rather than assume. These items
+override older calibration candidate, test-total, evidence, and next-gate
+statements below.
+
+- The clean integration worktree
+  `/home/path/.codex/worktrees/v2x-strict-calibration-integration` is at
+  `97cc334`. It includes the reviewed proposal-only static fitter, fail-closed
+  recovered/deployed OpenDRIVE topology correspondence, and Tier-B dynamic C0
+  evidence contracts. The combined locked suites pass 690/690 under the CARLA
+  Python 3.10 environment and 97/97 under the pinned map/LiDAR Python 3.12
+  environment; the hostile runner harness also passes. These are source gates,
+  not calibration, placement, deployment, or same-car acceptance.
+- Map selection remains blocked. The recovered 222-road/29-junction map and
+  deployed 208-road/32-junction map are structurally different. Topology
+  correspondence is conservative and proposal-only; it cannot establish
+  authoring/export provenance, select a candidate, or authorize scoring.
+- The static manifest builder candidate is clean and passes its focused and
+  locked suites, but it has no exact Fable verdict and is not integrated. Its
+  current deterministic deficit records zero independently adjudicated static
+  annotations and missing source-inventory/reviewer-ledger contracts. Never
+  relabel diagnostic matcher, CSV, or inverse-render artifacts to fill that
+  deficit.
+- A sanitized 24-hour development snapshot frozen at
+  `/home/path/V2XCarla/v2x-evidence/calibration/20260714T164410Z-past24h-development-corpus/20260714T164430Z`
+  contains 1,799 detections, including 421 trusted schema-V2 vehicle events
+  across ch1-ch4. All 421 nearest retained frames were recovered read-only from
+  Kinesis into the sibling `20260714T164410Z-past24h-trusted-vehicle-frames`
+  bundle with unique event IDs and one bound camera-config/snapshot identity.
+  Only 417/421 are within the 150 ms temporal gate and only 3/421 persisted
+  boxes apply to the selected frame under the 50 ms identity tolerance, so the
+  persisted boxes are not geometry truth. YOLO11m exact-frame redetection finds
+  a matching proposal for 334/421 events; hash-pinned YOLO11x finds 355/421.
+  Their conservative 0.60-IoU/full-visibility/contact-agreement gate retains
+  consensus on only 210/421. Sixty-five events have no vehicle proposal from
+  either model. Twenty-eight of those belong to one stationary ch2 production
+  track whose 73-frame/73-second dense window visibly contains no car, proving
+  that production event existence cannot be treated as vehicle truth. These
+  development results are neither independently reviewed correctness nor
+  twin-placement proof; retain the full disagreement and false-positive
+  accounting.
+- At the read-only live check, all four local perception cameras remain in
+  `reconnecting` state because the external Kinesis producers stopped together.
+  The local service must not be restarted as a substitute for restoring those
+  producers. Historical ON_DEMAND retrieval remains usable for development,
+  but live four-feed, recency, and cross-camera same-car gates all fail.
+- Claude CLI currently reports `loggedIn=false`; no Anthropic API/OAuth
+  credential is present in the process environment or authorized agent vault.
+  Any source lane requiring the mandatory exact Fable review must remain
+  uncommitted or unintegrated until authentication is restored. Never replace
+  that gate with a different model or claim a Fable pass from a session-limit
+  or authentication failure.
+- The sealed holdout remains no-view. Do not list, hash, decode, sample, or use
+  any content beneath
+  `/home/path/V2XCarla/v2x-evidence/calibration/20260713T192217Z-untouched-holdout-candidate-vault`
+  before parameter freeze and the single authorized evaluation. UE6 remains a
+  separate task and runtime namespace and must not enter V2X evidence or gates.
+
 ## Newest perception release chronology
 
-Observed through 2026-07-13 16:47 UTC; verify rather than assume. These items
-override every older PR 32/candidate statement below.
+Observed through 2026-07-13 18:37 UTC; verify rather than assume. These items
+override every older candidate, deployment, and next-gate statement below.
 
 - Canonical `origin/main` and the exact, detached, clean live production tree
-  are now PR 52 merge `0181c83c1d173681089e394b49b6259d324700cf`.
-  Perception is active with `KillMode=mixed`, the 60-second whole-cgroup
-  fail-safe retained, exactly four FFmpeg readers, and no environment override
-  file. CARLA, Drive, and web retained their pre-canary PIDs and zero restart
-  counts; all three intended timers are active. Do not describe PR 42-51 as
-  production.
+  are now PR 54 merge `400c3277452154985096bc251fe65b4be60cef36`.
+  PR 54 preserves the accepted PR 52 perception lifecycle and adds bounded,
+  deterministic UE5 twin-actor spawn bootstrap retries that always move a
+  provisional actor to the exact detection-derived transform before tracking.
+  Its controlled bridge deployment evidence is
+  `/home/path/V2XCarla/v2x-evidence/bridge/20260713T183135Z-pr54-twin-spawn-deploy/`;
+  its verified rollback is
+  `/home/path/V2XCarla/v2x-backend-backups/v2x-rollback-20260713T183135Z-pr54-twin-spawn/`.
+  CARLA, perception, and web retained their fingerprints, Drive restarted once
+  into the candidate, all services held `NRestarts=0`, Richmond returned LIVE
+  with zero sessions, and all intended timers were restored.
+- Production schema-V2 uploads are now enabled and the controlled PR 54
+  activation passed. Retain
+  `/home/path/V2XCarla/v2x-evidence/perception/20260713T183416Z-pr54-v2-upload-activation/`
+  and rollback
+  `/home/path/V2XCarla/v2x-backend-backups/v2x-rollback-20260713T183416Z-pr54-v2-upload-activation/`.
+  One new trusted schema-V2 row had exact one-for-one DynamoDB, API, and object-
+  history parity with identical SHA-256, 0 ms media reconstruction error, and
+  seven-day expiry. The observational UE5 check was LIVE with zero sessions
+  and exact 3/3 tracked-object-to-present-actor parity. This proves persistence
+  and actor lifecycle only; it is not camera calibration, same-car visual
+  overlap, or placement-accuracy acceptance.
+- The strict static calibration gate remains **0/4 cameras passing**. The 895
+  retained inverse-render evaluations are diagnostic only and remain
+  `acceptance_eligible=false`; do not relax thresholds, consume a holdout again,
+  or promote their poses. The current calibration reconciliation branch is
+  source-only in the clean Codex worktree and is not deployed. The dedicated
+  V2X UE5 source workspace is `/mnt/v2x-ue5`. UE6 remains excluded from this
+  task, its evidence, and every V2X acceptance decision.
 - PR 51's diagnostic five-child canary is rejected. Evidence is at
   `/home/path/V2XCarla/v2x-evidence/perception/20260713T160437Z-pr51-shutdown-diagnostics-canary/`,
   its bounded diagnostic is
@@ -74,9 +156,9 @@ override every older PR 32/candidate statement below.
   fingerprints, and all intended timers. A prior 16:35 UTC harness attempt
   rejected before candidate start because this systemd reports equivalent
   signals as `15`/`9`; it rolled exact PR 35 back cleanly and is not runtime
-  evidence. The next perception gate is controlled V2 upload/history proof,
-  not another lifecycle retry. Fable still fails authentication before file
-  access; never claim a Fable pass.
+  evidence. That lifecycle gate remains accepted in live PR 54; the newer V2
+  upload/history activation above has also passed. Fable still fails
+  authentication before file access; never claim a Fable pass.
 - PR 50's first complete five-child stop canary is rejected. Evidence is at
   `/home/path/V2XCarla/v2x-evidence/perception/20260713T153621Z-pr50-claimed-handover-shutdown-canary/`
   and the verified rollback is
@@ -1142,7 +1224,7 @@ section:
   samples; never opt down to one sample for an acceptance-labelled workflow.
   The latest completed bounded isolated UE5 search is
   `/home/path/V2XCarla/v2x-evidence/calibration/20260712T104045Z-inverse-render-search-v6/`.
-  It retained 896 candidates (224 per camera except 223 for ch3) across broad
+  It retained 895 diagnostic evaluations across broad
   pose/FOV ranges. Every selected candidate fails the fixed geometry gate and
   visual review; ch1/ch2/ch3/ch4 road-surface scores are approximately
   0.702/0.540/0.470/0.508 and all remain below the contract. A subsequent cold
@@ -1160,6 +1242,15 @@ section:
   actual complete UE5.5 Richmond source map/dependency graph (or an authorized,
   independently surveyed complete road-marking replacement), a fingerprinted
   full cook, and fresh untouched holdouts before production calibration.
+- The shared projection chain itself is accurate to about 0.015 mm at the
+  retained anchor, but one global SE(2) fails approach-held-out stability and
+  cannot repair topology. The diagnostic map exporter currently overwrites
+  per-waypoint marking metadata, retaining only the final left/right marking
+  for a lane, and uses unstable enumeration-only crosswalk IDs. Correction work
+  must preserve segmented OpenDRIVE `roadMark` s/t ranges under stable
+  road/lane/range identities and stable road/object crosswalk IDs. QL2 vertical
+  RMSE/P95 of about 0.044/0.087 m has no horizontal residual or current-paint
+  truth and is not an alignment acceptance gate.
 - A joint-rig diagnostic that forbids independent per-camera translation is at
   `/home/path/V2XCarla/v2x-evidence/calibration/20260712T121500Z-joint-visual-selfcal-v1/`.
   The 19 visual parameters are full-rank with condition about 1.5e3, but five
@@ -1171,9 +1262,24 @@ section:
   `docs/v2x-map-correction-recovery-plan.md`. The private
   `SimForgeinc/RFS_Reconstruction` main revision contains April Richmond
   editor assets but remains UE4.26 and has no raw RoadRunner/FBX/OBJ/USD/GIS
-  source. The production image is cooked-only. The only local comparison
-  workspace with UE5.5 source belongs to the separate UE6 comparison task and
-  is ineligible for V2X. Do not delete, inspect, or reuse it. A dedicated clean
+  source in that repository. The raw authoring export has now been recovered
+  at `/home/path/Downloads/entire scene-20260211T002439Z-1-001 (2)/entire scene/`:
+  `Richmond.fbx` is 163,879,392 bytes with SHA-256
+  `68e889cf8d2ab17cc2005c5e7364fd64608723b819df747c102d95a53757e3e0`,
+  and `Richmond.xodr` has SHA-256
+  `ed2e44492616901fbb20b89191ab03d666c0217620d0247e55235c116f5cf2b1`,
+  with 222 roads/29 junctions. It is byte-identical only to the older local
+  CARLA cache, not to the deployed UE5.5 OpenDRIVE. Live evidence reports
+  SHA-256 `0737f3d9f9f344c06b2c63fe669afa8a15f814568ee9c16046795338f56f5ee1`
+  with 208 roads/32 junctions; the exact retained comparison is
+  `/home/path/V2XCarla/v2x-evidence/calibration/20260712T104500Z-opendrive-source-audit/compare-old-richmond.json`.
+  GeoJSON, RoadRunner metadata, and materials are present. A source candidate
+  and dedicated V2X capacity are therefore available, but OpenDRIVE lineage,
+  independent survey, measured intrinsics, static calibration, full dependency
+  validation, cook, and untouched holdouts remain open. The production image
+  is cooked-only. The only local comparison workspace with UE5.5 source belongs
+  to the separate UE6 comparison task and is ineligible for V2X. Do not delete,
+  inspect, or reuse it. A dedicated clean
   V2X UE5.5 migration workspace now exists at `/mnt/v2x-ue5` on a 500 GB
   loop-backed ext4 image stored as the single removable file
   `/mnt/v2x-capacity/v2x-ue5-build.ext4` on the secondary Windows volume. The
@@ -1216,10 +1322,13 @@ section:
   V2X mount. The root filesystem and all UE6/comparison paths
   remain excluded. After any reboot, verify both mounts and the image allocation
   before resuming; no persistent mount entry has been installed yet. The UE4
-  import metadata names the missing authoring file
-  as `D:/Work/Simforge/Berkley/Road Runner/28012026/Richmond.fbx`. A Drive
+  import metadata names the historical authoring path
+  `D:/Work/Simforge/Berkley/Road Runner/28012026/Richmond.fbx`. A Drive
   inventory records a 158 GB Richmond export dated 2026-03-30, but its linked
-  folder now returns 404 and read-only Drive/Slack searches found no replacement.
+  folder still returns 404; retain that as historical provenance, not as the
+  current raw-source blocker. Do not import or deploy the recovered package
+  until its no-replace inventory, dependency graph, coordinate conventions,
+  independent survey, and controlled UE5.5 cook plan pass review.
 - Exact source-frame evidence for `global_car_4db7ffc8_138` is retained at
   `/home/path/V2XCarla/v2x-evidence/calibration/20260712T100128Z-object-138-exact/`.
   One representative persisted event per camera is bound to the exact fMP4
@@ -1292,6 +1401,15 @@ section:
 - Do not overwrite `/home/path/V2XCarla/v2x-backend` until a controlled deployment gate. It may run active services and contain live-only work.
 - Preserve `/home/path/V2XCarla/v2x-backend-backups/` and take a fresh rollback snapshot before deployment.
 - Use only the packaged Unreal Engine 5.5 worker container `carla-rr-maps` for production V2X simulator work. The accepted image is RR/CARLA 0.10 and its runtime reports `5.5.0-0+UE5`.
+- Calibration batch rendering may use the same approved image in the tracked,
+  non-restarting `v2x-calibration-ue5` container on loopback ports 2300-2302.
+  This Path PC has a 16 GiB GPU and cannot safely run that worker alongside the
+  production worker: a dual-worker Richmond load produced a bounded Vulkan OOM
+  while production fingerprints remained stable. Use a rollback-captured,
+  zero-session maintenance window, hold all three mutation-capable timers, stop
+  Drive and the production UE5 worker, run one isolated batch, then stop the
+  owned calibration container and fully restore production/timers. Never point
+  an optimizer at production ports 2000-2002.
 - Never use the retired `carla-rfs`/CARLA 0.9.16 restart recipe.
 - Do not build, launch, debug, authorize, retry, coordinate, or accept evidence from `/home/path/V2XCarla/CarlaUE6`, `/home/path/V2XCarla/UnrealEngine_6`, `ue6-*` user units, or ports `2100-2102` in a V2X task. A separate UE6 task owns those paths, processes, changes, and acceptance criteria.
 - UE6 work must not stop, hold, delay, restart, or reconfigure V2X services or timers. V2X work must likewise remain independent: do not inspect, poll, gate on, coordinate, or operate UE6 paths, units, processes, listeners, or evidence. Validate only the V2X-owned UE5.5 resources below. Any cross-runtime contention is owned by the separate UE6 task, which must stop itself rather than asking V2X to change state.
@@ -1325,7 +1443,7 @@ Observed on 2026-07-10 UTC; verify rather than assume:
 | Frontend | Vite on `0.0.0.0:5173`, `v2x-web.service`; do not inject browser-local `VITE_DRIVE_WS_URL` |
 | Perception | `0.0.0.0:8090`, `v2x-perception.service` |
 | Perception Python | `/home/path/V2XCarla/perception-venv/bin/python` (observed Python 3.12.3) |
-| Perception assets | ignored live `apps/perception/yolov8n.pt` plus `~/.cache/torch/hub/checkpoints/mobilenet_v3_small-047dcff4.pth`; hash and preserve both |
+| Perception assets | ignored live `apps/perception/yolov8n.pt` plus pinned `~/.cache/torch/hub/checkpoints/mobilenet_v3_small-047dcff4.pth` and `convnext_base-6075fbad.pth`; hash and preserve all three |
 | Drive tunnel | `v2x-cloudflared-drive.service`; currently Quick Tunnel unless a named-tunnel gate has completed |
 | Perception tunnel | `v2x-cloudflared-perception.service`; currently Quick Tunnel unless a named-tunnel gate has completed |
 | Public API | `https://w0j9m7dgpg.execute-api.us-west-1.amazonaws.com` |
@@ -1644,6 +1762,59 @@ map to an `actor_present=true` UE5 CARLA `actor_id`, type, role, and transform.
 Require three status samples spanning at least two replay seconds, one stable
 actor ID, and at least 0.25 m of movement; validate the actor directly in CARLA.
 
+A shared database `object_id` across cameras is not itself identity proof. For
+vehicles, require two independently passing historical reports, exact archived
+frame hashes, different cameras, bounded transit time, and the pinned ConvNeXt
+appearance gate before replay acceptance:
+
+```bash
+/home/path/V2XCarla/perception-venv/bin/python \
+  /home/path/V2XCarla/v2x-backend/apps/perception/tools/verify_cross_camera_identity.py \
+  --left-report /tmp/ch4-report.json --left-frame /tmp/ch4-frame.jpg \
+  --right-report /tmp/ch1-report.json --right-frame /tmp/ch1-frame.jpg \
+  --output /tmp/cross-camera-identity.json --device cuda
+```
+
+Production association must compute pinned ConvNeXt embeddings for vehicles,
+require similarity at least `0.60` for every slow-path vehicle reattachment
+(same or cross camera), never share a cache entry when `track_id` is absent,
+and persist the association method, similarity, threshold, devices, time, and
+distance. Missing appearance evidence fails closed rather than falling back to
+proximity alone.
+Live vehicle association must also require exact trusted schema-v2 HLS media
+time and reject missing, non-finite, or combined localization uncertainty above
+2.0 m. Never clamp a large uncertainty into the accepted association radius,
+and record rather than silently overwrite a car/truck/bus class conflict.
+When two vehicle candidates have insufficient spatial/appearance separation,
+reject association, persist bounded ambiguity evidence, and start a distinct
+track. Never let greedy input order choose between adjacent plausible cars.
+Every tracked camera must provide finite measured `localization.pixel_sigma`
+and `localization.calibration_uncertainty_m` no greater than 2.0 m. Missing
+values block perception startup; never fill them from rejected exploratory or
+matcher-generated calibration rows.
+
+The 24-hour persistence gate is paginated and fail-closed. Require every
+camera to have trusted schema-v2 events spanning at least 23 hours and a recent
+upload; a query over a 24-hour window is not itself proof of 24-hour history.
+Every accepted row must use `exact_same_session_pts`, reconstruct media time
+within 5 ms, keep decode ISO/epoch and latency within 5 ms, ingest within five
+integer seconds, expire exactly seven days from media time, and carry an event
+ID with no leading/trailing whitespace:
+
+Run the row-content verifier while the target rows are still within that
+seven-day lifetime. Its TTL gate is the exact producer delta
+`expires_at - int(media_timestamp) == 604800`; it intentionally does not compare
+expiry with verifier wall time, because API/read latency and DynamoDB's
+asynchronous post-expiry purge are not producer-schema failures. A later long
+watch validates purge/availability behavior separately and must not require an
+already purged item to remain readable.
+
+```bash
+/home/path/V2XCarla/perception-venv/bin/python \
+  /home/path/V2XCarla/v2x-backend/apps/perception/tools/verify_detection_persistence.py \
+  https://w0j9m7dgpg.execute-api.us-west-1.amazonaws.com
+```
+
 Twin camera alignment is a separate gate from channel wiring. The existing
 perception CSVs contain only 4-7 local-XZ points per channel, no independent
 holdouts, no global landmark IDs, and internally inconsistent shared points;
@@ -1658,6 +1829,263 @@ frame, board, measurement, map, and render hashes. At 1280x960 require held-out
 point RMSE/P95/max at most 10/16/24 pixels and finite road-geometry RMSE/max at
 most 6/12 pixels for every camera, plus correct road/lane/crosswalk topology,
 horizon, vanishing directions, stable landmarks, and all four retained renders.
+Scale these limits by `manifest.width/1280` when residuals use the native
+real-camera pixel space; do not apply 1280-wide limits unchanged to 2560-wide
+evidence.
+The former 75/125/175 point limits were framing diagnostics and must never be
+used as calibration acceptance.
+
+Fit, deploy, and verify must all call the same tracked camera-transform and
+optical-model functions. A missing translation offset means zero; never hide a
+default pole displacement in one path. Resolve candidate landmarks directly
+from the UE5 map/depth buffer with `build_twin_camera_landmarks.py`; legacy
+camera-local XZ converted through the heading under test is circular evidence.
+Reject sparse, collinear, clustered, or non-global datasets before fitting.
+Aggregate the four per-camera manifests against one hash-bound surveyed site
+registry with `aggregate_twin_calibration_manifests.py` before any joint fit.
+Require one canonical landmark ID to retain one split and surveyed world
+identity across every camera; reject renamed near-duplicates and keep the
+aggregation `acceptance_eligible=false` until every independent gate passes.
+Every camera must participate in at least one genuinely shared survey identity,
+and shared identities must connect all four cameras rather than form isolated
+pairs. The report must state shared-landmark counts per camera and graph edges.
+Hash strings alone are not evidence: aggregation and optimization must each
+re-open and SHA-256-check the exact annotation, real/twin frames, cameras file,
+intrinsics artifact and source images, raw depth buffer, and external survey
+records from canonical retained paths.
+For RR/CARLA 0.10 live acceptance, the shared transform must report strict
+`opendrive_georeference` provenance; `origin_centered_fallback` is never an
+accepted live projection.
+
+Feature matchers (SIFT, LoFTR, RoMa, or successors) may propose landmarks but
+cannot themselves certify held-out truth. Repeated lane/crosswalk markings can
+produce a low numerical loss for the wrong correspondence. Retain the real and
+twin source frames, manually/geometrically identify each held-out landmark, and
+require an independent road-geometry gate for road edges, lane markings,
+horizon, vanishing points, curb/crosswalk topology, and stable map landmarks.
+If the retained render visibly contradicts the real view, fail the candidate
+even when a point-only threshold passes; do not weaken thresholds or relabel
+matcher-generated points to make it green.
+
+Semantic inverse rendering is the preferred diagnostic search before manual
+acceptance annotation. Use `scripts/v2x-calibration-worker.sh` and
+`render_semantic_calibration_candidate.py` to produce hash-bound, synchronized
+RGB, raw semantic, raw instance, and metric-depth buffers for one explicit
+candidate. The renderer must reject the production container/port, verify the
+approved image and Richmond OpenDRIVE fingerprints, use one CARLA frame for all
+buffers, destroy all owned sensors, and keep every result
+`acceptance_eligible=false`.
+
+The current Richmond RR/UE5 build was observed to emit semantic tag 11 for 100%
+of static pixels and instance sentinel 65535 for 100% of static pixels, even
+while RGB and depth were valid. Retain those buffers as failure evidence; never
+claim class-aware alignment from them. Build diagnostic road-paint/curb targets
+from retained RGB, depth, reviewed topology, and class-specific masks instead.
+Score robust symmetric contour distance, P95/max, tolerance precision/recall,
+and topology separately. A lower clipped mean does not promote a candidate when
+P95, tolerance F1, a required semantic class, or the retained visual overlay
+regresses. Missing/mismatched map paint is a map blocker, not a reason to mask a
+required held-out class or weaken the road-geometry gate.
+
+Freeze the static camera before using vehicles. For a real vehicle with no close
+UE5 mesh, treat blueprint family and dimensions as nuisance variables and use a
+robust silhouette centroid/midpoint only as a lower-weight cue alongside visible
+contour, wheel/road contact, projected 3-D extent, multi-camera timing, road
+legality, and temporal smoothness. Never let midpoint agreement alone recalibrate
+the camera or certify same-car placement.
+
+Manual four-camera evidence must use one JSON annotation artifact per channel.
+Capture observational pairs with `capture_twin_calibration_pairs.py` only
+against a twin protocol that sends a `twin_frame` JSON packet immediately
+before each binary JPEG. Pass the exact active `--cameras-json`; the capture
+must bind the JPEG hash, channel ID, LIVE mode, CARLA frame/timestamp, capture
+gap, whole config hash, and selected camera hash. The older binary-only/twin
+clock sequence is diagnostic and must fail this capture gate.
+Points require `provenance="manually_verified_unique"`, at least eight frozen
+train and four untouched holdouts. Road edges, lane markings, and crosswalk
+geometry require `provenance="manually_traced_geometry"`, at least three train
+and two holdout polylines; infinite-line evidence is not accepted. Include the
+exact real/twin frame SHA-256 values and decode both retained images to verify
+their actual dimensions. Also freeze the exact `cameras.json` SHA-256 that
+produced the annotated twin render and reject a manifest build against any
+other config. Reject duplicate real/twin point pixels across train and holdout,
+zero-length or duplicate/resampled train/holdout polylines, collinear/clustered
+point sets, holdouts copied from fit geometry, and blank/duplicate semantic
+landmark descriptions. Reject annotated twin pixels whose 3x3 depth
+neighborhood crosses a geometry discontinuity; a plausible center depth alone
+does not establish frozen world truth. Retain the numeric 3x3 neighborhood
+range/deviation evidence for every point and polyline vertex. Never translate
+`manual_verified_static`, matcher proposals, or vague repeated line points into
+the accepted provenance labels.
+
+Do not treat repeated nominal `fx/fy/cx/cy` values in `cameras.json` as
+measured intrinsics. Each camera requires an `intrinsics_calibration` block
+backed by a retained checkerboard or ChArUco JSON result artifact: exact
+SHA-256, one unique SHA-256 per accepted source image, at least 10 accepted
+calibration images, no more than 2 px calibration RMS, matching image
+resolution and camera matrix, and finite Brown-Conrady `k1/k2/p1/p2/k3`. Pass
+the actual result with `--intrinsics-artifact` and repeat
+`--intrinsics-source-image` for every declared source hash; the manifest
+builder must decode and hash every retained calibration image, then parse and
+compare the normalized result to `cameras.json` before it connects to CARLA or
+spawns a depth sensor. Quantify the full measured physical
+model against the deployed UE5 centered-pinhole render over the image; an
+optical mismatch above 0.25 px keeps deployment closed until a shared render
+distortion or physical-feed undistortion path is implemented and verified.
+The live repeated K (`fx=fy=1325.4`, `cx=1280`, `cy=960`) remains assumed, and
+perception currently consumes missing/zero distortion. The acquisition tool
+does not yet bind camera channel/device, exact board SVG and physical
+measurement/photo, capture timestamp, encoder/crop/focus/zoom state, or
+before/after mount stability. Add and test those fail-closed bindings and wire
+measured distortion consumption before calling any physical intrinsics measured.
+
+Generate a dimensioned board with the tracked acquisition tool, print it at
+100% scale, and verify one square with a physical ruler before capture:
+
+```bash
+/home/path/V2XCarla/carla-venv-310/bin/python \
+  apps/bridge/tools/calibrate_camera_intrinsics.py generate-board \
+  --output /path/to/checkerboard-9x6-25mm.svg \
+  --inner-columns 9 --inner-rows 6 --square-mm 25
+```
+
+For each fixed physical camera, acquire at least 10 sharp, unique fit images
+and two untouched holdouts at its native resolution. Bind the camera/channel,
+resolution, crop, focus/zoom state, board hash, capture times, and source
+hashes. Move and tilt the board across every image edge/corner with at least 15
+degrees of tilt spread and 1.3x distance variation; do not crop, resize,
+digitally warp, or reuse frames. Obtain site-access and traffic-safety
+authorization before roadside capture, and re-capture frozen landmarks after
+the session to prove the camera mount did not move. Calibrate with one
+`--image` argument per fit image and one `--holdout-image` per holdout:
+
+```bash
+/home/path/V2XCarla/carla-venv-310/bin/python \
+  apps/bridge/tools/calibrate_camera_intrinsics.py calibrate \
+  --image /path/to/ch1-board-01.png \
+  --image /path/to/ch1-board-02.png \
+  `# repeat for at least 10 unique accepted images` \
+  --holdout-image /path/to/ch1-board-holdout-01.png \
+  --holdout-image /path/to/ch1-board-holdout-02.png \
+  --output /path/to/ch1-intrinsics.json \
+  --report /path/to/ch1-intrinsics-report.json \
+  --inner-columns 9 --inner-rows 6 --square-mm 25
+```
+
+The tool must reject decode failures, mixed resolutions, duplicate source
+hashes, fewer than 10 accepted fits or two disjoint holdouts, poor edge/corner,
+tilt, or distance coverage, non-finite output, fit or holdout RMS above 2 px,
+and held-out per-corner max error above 5 px. Preserve the board hash, every
+source image, artifact, report, and the artifact SHA-256 copied into
+`cameras.json`.
+
+Only in an authorized mutation window with zero Drive sessions, resolve those
+twin pixels through a temporary UE5 depth sensor into one optimizer manifest:
+
+```bash
+/home/path/V2XCarla/carla-venv-310/bin/python \
+  /home/path/V2XCarla/v2x-backend/apps/bridge/tools/build_twin_calibration_manifest.py \
+  /path/to/ch1-annotations.json /tmp/ch1-calibration-manifest.json \
+  --camera ch1 \
+  --real-frame /path/to/real-ch1.jpg \
+  --twin-frame /path/to/twin-ch1.jpg \
+  --intrinsics-artifact /path/to/ch1-intrinsics.json \
+  --intrinsics-source-image /path/to/ch1-charuco-01.png \
+  --intrinsics-source-image /path/to/ch1-charuco-02.png \
+  --depth-frame-output /path/to/ch1-depth.bgra \
+  --cameras-json /home/path/V2XCarla/v2x-backend/config/cameras.json
+```
+
+The builder must destroy its owned depth sensor in `finally`. Preserve the
+manifest's annotation, camera-file, per-camera, real-frame, twin-frame, depth
+frame, map/OpenDRIVE/georeference projection provenance, and deployment-model
+fingerprints. The deployment model must freeze
+the surveyed anchor, unadjusted pitch/yaw/roll/FOV, and all six UE5 lens
+attributes so the fitted absolute camera can be translated back into tracked
+`twin_pose` fields without relying on live state. Run
+`optimize_twin_road_geometry.py` only on this generated manifest; a
+hand-converted CSV is not acceptance evidence.
+Retain the exact raw BGRA depth buffer, including its SHA-256 and byte count;
+the manifest alone is insufficient evidence for depth-derived world points.
+
+At optimization time, pass the exact retained annotations, real frame, twin
+frame, cameras file, intrinsics artifact, and every calibration source image
+again. The optimizer must re-hash all inputs, decode and match every declared
+source image, re-hash the selected canonical camera object, and compare the
+calibration block with both `cameras.json` and the parsed artifact; a direct
+`optimize_manifest()` call without this binding is non-acceptable. First build
+one report from all four complete manifests and the surveyed registry; distinct
+landmark IDs below 0.25 m, inconsistent cross-camera resolved world identity,
+mixed map fingerprints, or incomplete builder counts fail closed:
+
+```bash
+/home/path/V2XCarla/carla-venv-310/bin/python \
+  apps/bridge/tools/aggregate_twin_calibration_manifests.py \
+  --registry /path/to/site-landmark-registry.json \
+  --manifest /path/to/ch1-calibration-manifest.json \
+  --manifest /path/to/ch2-calibration-manifest.json \
+  --manifest /path/to/ch3-calibration-manifest.json \
+  --manifest /path/to/ch4-calibration-manifest.json \
+  --output /path/to/four-camera-aggregation.json
+```
+
+The optimizer re-hashes the registry and all four referenced manifests and
+recomputes that report before connecting to UE5:
+
+```bash
+/home/path/V2XCarla/carla-venv-310/bin/python \
+  apps/bridge/tools/optimize_twin_road_geometry.py \
+  /path/to/ch1-calibration-manifest.json \
+  --output /path/to/ch1-calibration-report.json \
+  --site-aggregation-report /path/to/four-camera-aggregation.json \
+  --annotations /path/to/ch1-annotations.json \
+  --real-frame /path/to/real-ch1.jpg \
+  --twin-frame /path/to/twin-ch1.jpg \
+  --cameras-json /path/to/cameras.json \
+  --intrinsics-artifact /path/to/ch1-intrinsics.json \
+  --intrinsics-source-image /path/to/ch1-charuco-01.png \
+  --intrinsics-source-image /path/to/ch1-charuco-02.png \
+  --depth-frame /path/to/ch1-depth.bgra
+```
+
+The optimizer must reconnect read-only to the UE5.5 worker, verify the active
+map name and OpenDRIVE SHA-256, record the host/port endpoint, and recompute the
+absolute camera anchor from the verified config. In the same authorized
+zero-session mutation window, spawn one temporary depth sensor at that exact
+transform, compare fresh and retained depth at every annotated pixel, derive
+world truth from the fresh render, and destroy the sensor in `finally`. Any
+baseline, deployment-model, map-content, retained-depth, or feature-world
+mismatch is a hard failure. No other actor or service mutation is allowed.
+
+The optimizer must fit true 6-DoF extrinsics (CARLA x/y/z plus
+pitch/yaw/roll), FOV, principal point, and radial distortion. Preserve the
+fully unconstrained solution as diagnostic optical evidence, but never deploy
+it directly: pose, principal point, and distortion are partly degenerate. Run
+a second bounded optimization through the exact production UE5/verifier model
+(currently centered principal point and zero modeled radial distortion), emit
+the candidate `twin_pose`, and prove a sub-pixel optical plus exact transform
+round trip. If the independently measured principal point or distortion cannot
+be represented by that shared model, keep deployment closed; never copy the
+optimizer's `k1` into CARLA `lens_k`, because those coefficients are not known
+to be equivalent. A parameter at its search bound, an underconstrained fit, or
+a green unconstrained fit paired with a failing deployable held-out fit is a
+failure, not a calibration result.
+
+Actor visual proof must also be reproducible across bridge restarts: choose UE5
+blueprints with a stable digest rather than Python's randomized `hash()`. For a
+same-car gate, require the projected actor bbox/centroid in the matched twin
+camera over multiple replay timestamps, not merely `actor_present=true`.
+
+A shared persisted object ID across cameras is diagnostic, not identity proof.
+Run `apps/perception/tools/verify_cross_camera_persistence.py` against the
+public API and require trusted schema-v2 media clocks, matching perception run,
+finite GPS/bbox, localization uncertainty no greater than 2 m, plausible
+transit time/speed, and a persisted
+`identity_association.method="cross_camera_spatiotemporal_convnext"` with the
+previous device, ConvNeXt similarity at least 0.60, and consistent distance.
+Current production records that omit this association evidence must fail even
+when their object IDs happen to match; visual same-car proof remains a separate
+required gate.
 
 Useful logs:
 
@@ -1744,6 +2172,11 @@ Before changing live services:
 4. Stop both repair timers and the hourly restart timer.
 5. Capture installed unit hashes, process commands, container image ID, live Git status, tunnel/runtime config, ignored-model/cache hashes, perception Python/pip state, and service logs.
 6. Preserve rollback copies of installed units, ignored runtime assets, and the live repository changes.
+   Use `scripts/capture-v2x-rollback.sh` in its default plan mode first. After
+   the timers are stopped, run `ACTION=capture`, then require `ACTION=verify`
+   against the new bundle; verification rehearses tracked, staged, unstaged,
+   and untracked repository restoration in an isolated clone without changing
+   the live checkout.
 7. Let `v2x-carla-rr.service` adopt an already-running validated container through `docker wait`; do not restart or recreate it merely to add supervision.
 8. Install one layer at a time and refresh UI/API evidence after each action.
 9. Start perception with `/etc/v2x-perception.env` keeping `V2X_PERCEPTION_UPLOAD=false`; require four fresh/changing feeds before enabling production uploads and proving a current DynamoDB record.

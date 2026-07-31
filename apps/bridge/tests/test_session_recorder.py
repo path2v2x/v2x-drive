@@ -30,6 +30,7 @@ class TestSessionRecorder:
             assert header["type"] == "metadata"
             assert header["scene_start"] == "2026-03-22T17:00:00Z"
             assert header["objects_count"] == 5
+            recorder.stop()
 
     def test_record_frame(self):
         """Recording a frame should append a JSONL line with correct data."""
@@ -59,6 +60,7 @@ class TestSessionRecorder:
             assert frame["throttle"] == 0.5
             assert frame["speed_kmh"] == 47.2
             assert "t" in frame  # timestamp
+            recorder.stop()
 
     def test_multiple_frames(self):
         """Multiple frames should all be recorded in order."""
@@ -78,6 +80,7 @@ class TestSessionRecorder:
             with open(filepath) as f:
                 lines = f.readlines()
             assert len(lines) == 11  # metadata + 10 frames
+            recorder.stop()
 
     def test_stop_writes_footer(self):
         """Stopping the recording should write a footer with summary."""

@@ -23,6 +23,7 @@ from verify_historical_correlation import (  # noqa: E402
     fetch_bytes,
     fetch_media_playlist,
     jpeg_dimensions,
+    load_detection_from_snapshot,
     main,
     normalize_api_base_url,
     normalize_bbox,
@@ -32,6 +33,7 @@ from verify_historical_correlation import (  # noqa: E402
     resolve_inputs,
     select_segment,
     validate_media_timestamp_trust,
+    write_json_evidence,
 )
 
 
@@ -185,7 +187,8 @@ class SessionServerTests(unittest.TestCase):
                 self.wfile.write(body)
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.server.daemon_threads = True
+        self.server.daemon_threads = False
+        self.server.block_on_close = True
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base_url = f"http://127.0.0.1:{self.server.server_port}"
@@ -236,6 +239,75 @@ class SessionServerTests(unittest.TestCase):
 
 
 class StructuredEvidenceTests(unittest.TestCase):
+    def test_json_evidence_is_atomic_and_fail_closed_on_overwrite(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "nested" / "report.json"
+            write_json_evidence(output, {"gate": False})
+            self.assertEqual(json.loads(output.read_text()), {"gate": False})
+            self.assertEqual(list(output.parent.glob(f".{output.name}.*")), [])
+            with self.assertRaisesRegex(VerificationError, "already exists"):
+                write_json_evidence(output, {"gate": True})
+            write_json_evidence(output, {"gate": True}, overwrite=True)
+            self.assertEqual(json.loads(output.read_text()), {"gate": True})
+
+    def test_hash_bound_snapshot_loads_exact_unique_event(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot = Path(temp_dir)
+            first = trusted_detection(event_id="event-1")
+            second = trusted_detection(event_id="event-2")
+            detections = snapshot / "detections.ndjson"
+            detections.write_text(
+                json.dumps(first) + "\n" + json.dumps(second) + "\n"
+            )
+            import hashlib
+
+            digest = hashlib.sha256(detections.read_bytes()).hexdigest()
+            (snapshot / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "v2x-detection-corpus-snapshot/v1",
+                        "artifacts": {"detections.ndjson": digest},
+                    }
+                )
+            )
+            self.assertEqual(
+                load_detection_from_snapshot(snapshot, "event-2")["event_id"],
+                "event-2",
+            )
+
+    def test_snapshot_rejects_tampering_and_duplicate_event_ids(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot = Path(temp_dir)
+            detections = snapshot / "detections.ndjson"
+            row = trusted_detection(event_id="event-1")
+            detections.write_text(json.dumps(row) + "\n")
+            import hashlib
+
+            digest = hashlib.sha256(detections.read_bytes()).hexdigest()
+            (snapshot / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "v2x-detection-corpus-snapshot/v1",
+                        "artifacts": {"detections.ndjson": digest},
+                    }
+                )
+            )
+            detections.write_text(json.dumps(row) + "\n" + json.dumps(row) + "\n")
+            with self.assertRaisesRegex(VerificationError, "hash does not match"):
+                load_detection_from_snapshot(snapshot, "event-1")
+
+            digest = hashlib.sha256(detections.read_bytes()).hexdigest()
+            (snapshot / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "v2x-detection-corpus-snapshot/v1",
+                        "artifacts": {"detections.ndjson": digest},
+                    }
+                )
+            )
+            with self.assertRaisesRegex(VerificationError, "not unique"):
+                load_detection_from_snapshot(snapshot, "event-1")
+
     def test_nearest_encoded_frame_uses_relative_pts(self):
         frames = [
             {"index": 0, "relative_seconds": 0.0},

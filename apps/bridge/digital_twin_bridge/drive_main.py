@@ -502,6 +502,10 @@ async def main():
                 detections_url=config.TWIN_DETECTIONS_URL,
                 poll_interval=config.TWIN_POLL_INTERVAL,
                 despawn_after=config.TWIN_DESPAWN_SECONDS,
+                reviewed_placement=config.TWIN_REVIEWED_PLACEMENT,
+                cameras_json_path=config.CAMERAS_JSON,
+                static_calibration_path=config.TWIN_STATIC_CALIBRATION_MANIFEST,
+                authority_key_file=config.TWIN_REVIEW_AUTHORITY_FILE,
                 # Detections DB fetcher: lets /twin clients replay the twin
                 # at any timestamp in the DB's 24h retention window.
                 range_fetcher=make_api_fetcher(config),

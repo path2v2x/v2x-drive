@@ -14,5 +14,6 @@ fi
 
 cd "${APP_DIR}"
 mkdir -p output
+export PYTHONPATH="${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 exec "${PYTHON_BIN}" process_video.py

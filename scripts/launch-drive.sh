@@ -99,6 +99,7 @@ fi
 # ─────────────────────────────────────────────────────────────
 echo "Starting Drive Server..."
 cd "$BRIDGE_DIR"
+export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export AWS_PROFILE
 export DTB_CARLA_HOST="${CARLA_HOST:-localhost}"
 export DTB_CARLA_PORT="$CARLA_PORT"

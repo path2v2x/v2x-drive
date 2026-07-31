@@ -54,6 +54,17 @@ def sync(mock_world, monkeypatch):
 
 
 class TestSpawn:
+    def test_blueprint_selection_is_stable_across_instances(self, sync, mock_world):
+        sync._load_blueprints()
+        first = sync._blueprint_for(twin_sync_module.TwinTrack("global_car_42", "car")).id
+        other = TwinSync(mock_world, mock_world.get_map())
+        other._vehicle_blueprints = list(sync._vehicle_blueprints)
+        other._truck_blueprints = list(sync._truck_blueprints)
+        other._walker_blueprints = list(sync._walker_blueprints)
+        other._blueprints_loaded = True
+        second = other._blueprint_for(twin_sync_module.TwinTrack("global_car_42", "car")).id
+        assert second == first
+
     def test_car_detection_spawns_vehicle(self, sync, mock_world):
         sync._apply([make_detection()])
         assert len(sync.actor_ids()) == 1
@@ -99,6 +110,22 @@ class TestSpawn:
             "track_id": 13,
             "bbox": {"x1": 488.0, "y1": 122.0, "x2": 836.0, "y2": 336.0},
             "gps_location": {"latitude": 37.9155, "longitude": -122.3348},
+            "raw_carla_location": {
+                "x": pytest.approx(15.5),
+                "y": pytest.approx(-34.8),
+                "z": pytest.approx(0.0),
+            },
+            "target_carla_location": {
+                "x": pytest.approx(15.5),
+                "y": pytest.approx(-34.8),
+                "z": pytest.approx(0.4),
+            },
+            "lane_snap_distance_m": pytest.approx(0.0),
+            "raw_to_target_planar_m": pytest.approx(0.0),
+            "raw_to_actor_planar_m": pytest.approx(0.0),
+            "reference_to_actor_planar_m": None,
+            "placement_planar_error_m": None,
+            "placement_metric_status": "independent_reference_missing",
             "tracked_actor_id": actor.id,
             "actor_id": actor.id,
             "actor_present": True,
@@ -115,6 +142,9 @@ class TestSpawn:
                     "roll": actor.get_transform().rotation.roll,
                 },
             },
+            "cleanup_failure": None,
+            "actor_quarantined": False,
+            "quarantined_reason": None,
         }
 
     def test_status_fails_closed_when_tracked_actor_vanished(self, sync, mock_world):
@@ -139,6 +169,34 @@ class TestSpawn:
             {"object_type": "car", "gps_location": {"latitude": 1, "longitude": 2}},  # no id
         ])
         assert sync.actor_ids() == set()
+
+    def test_vehicle_far_from_driving_lane_fails_closed(self, sync, mock_world):
+        waypoint = mock_world.get_map().get_waypoint(MockLocation())
+        waypoint.transform.location = MockLocation(100.0, 100.0, 0.0)
+        mock_world.get_map().get_waypoint = lambda *_args, **_kwargs: waypoint
+        sync._apply([make_detection()])
+        assert sync.actor_ids() == set()
+        status = sync.status()["objects"][0]
+        assert status["actor_present"] is False
+        assert status["lane_snap_distance_m"] > 4.0
+
+    def test_nearby_lane_supplies_only_height_and_yaw(self, sync, mock_world):
+        waypoint = mock_world.get_map().get_waypoint(MockLocation())
+        waypoint.transform.location = MockLocation(18.5, -34.8, 1.25)
+        waypoint.transform.rotation.yaw = 73.0
+        mock_world.get_map().get_waypoint = lambda *_args, **_kwargs: waypoint
+        sync._apply([make_detection()])
+        actor = mock_world.get_actor(next(iter(sync.actor_ids())))
+        transform = actor.get_transform()
+        assert transform.location.x == pytest.approx(15.5)
+        assert transform.location.y == pytest.approx(-34.8)
+        assert transform.location.z == pytest.approx(1.55)
+        assert transform.rotation.yaw == pytest.approx(73.0)
+        status = sync.status()["objects"][0]
+        assert status["lane_snap_distance_m"] == pytest.approx(3.0)
+        assert status["raw_to_target_planar_m"] == pytest.approx(0.0)
+        assert status["placement_planar_error_m"] is None
+        assert status["placement_metric_status"] == "independent_reference_missing"
 
     def test_firetruck_never_selected(self, sync, mock_world):
         pools = {
@@ -260,6 +318,41 @@ class TestSpawn:
         assert sync.actor_ids() == set()
         assert sync._tracks["global_car_1"].actor_id is None
 
+    def test_successful_retry_clears_provisional_quarantine(
+        self, sync, mock_world, monkeypatch
+    ):
+        original_spawn = mock_world.try_spawn_actor
+        provisional = None
+
+        def fail_first_setup(blueprint, transform, *args, **kwargs):
+            nonlocal provisional
+            actor = original_spawn(blueprint, transform, *args, **kwargs)
+            if provisional is None:
+                provisional = actor
+
+                def fail_exact_transform(_transform):
+                    raise RuntimeError("set_transform failed")
+
+                actor.set_transform = fail_exact_transform
+            return actor
+
+        monkeypatch.setattr(mock_world, "try_spawn_actor", fail_first_setup)
+
+        sync._apply([make_detection()])
+
+        track = sync._tracks["global_car_1"]
+        actor = mock_world.get_actor(track.actor_id)
+        assert provisional.is_destroyed
+        assert actor is not provisional
+        assert track.cleanup_failure is None
+        assert track.quarantined_reason is None
+        assert sync.status()["objects"][0]["actor_present"] is True
+
+        sync._apply([make_detection(lat=37.9156)])
+        track.lerp_start = time.time() - 5.0
+        sync.tick()
+        assert actor.get_transform().location.x == pytest.approx(track.target.x)
+
     def test_retry_reuses_candidate_order_and_never_duplicates_actor(
         self, sync, mock_world, monkeypatch
     ):
@@ -357,12 +450,50 @@ class TestTick:
         sync.tick()
         assert actor.get_transform().location.x == pytest.approx(track.target.x)
 
-    def test_tick_handles_vanished_actor(self, sync, mock_world):
+    def test_tick_retains_ownership_when_actor_lookup_returns_none(
+        self, sync, mock_world
+    ):
         sync._apply([make_detection()])
         track = sync._tracks["global_car_1"]
-        mock_world._actors.clear()
+        actor_id = track.actor_id
+        actor = mock_world.get_actor(actor_id)
+        original_get_actor = mock_world.get_actor
+        calls = 0
+
+        def miss_first_lookup(requested_actor_id):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return None
+            return original_get_actor(requested_actor_id)
+
+        mock_world.get_actor = miss_first_lookup
         sync.tick()
-        assert track.actor_id is None
+        assert track.actor_id == actor_id
+        assert sync.actor_ids() == {actor_id}
+        assert track.quarantined_reason == "actor_lookup_missing"
+        assert track.cleanup_failure == "actor_lookup_missing"
+
+        status = sync.status()
+        evidence = status["objects"][0]
+        assert evidence["tracked_actor_id"] == actor_id
+        assert evidence["actor_id"] is None
+        assert evidence["actor_present"] is False
+        assert evidence["actor_quarantined"] is True
+        assert evidence["quarantined_reason"] == "actor_lookup_missing"
+        assert status["cleanup_failures"] == {
+            "global_car_1": "actor_lookup_missing"
+        }
+
+        sync._apply([make_detection(lat=37.9156)])
+        assert actor.is_destroyed
+        assert sync.actor_ids() == set()
+        assert sync.status()["objects"] == []
+        assert len(mock_world.spawned_actors) == 1
+
+        sync._apply([make_detection(lat=37.9156)])
+        assert len(mock_world.spawned_actors) == 2
+        assert sync.actor_ids() != {actor_id}
 
 
 class TestReplay:

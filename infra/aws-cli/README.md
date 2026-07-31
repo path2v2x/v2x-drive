@@ -6,6 +6,151 @@ This folder provisions the `v2x-backend` data plane in **`us-west-1`**:
 - Read API: HTTP API -> `v2x-backend-read`
 - Private state bucket for digital twin state + snapshots
 
+## Calibration evidence AWS prerequisites
+
+`provision-calibration-evidence-prerequisites.sh` is the deployment-as-code
+gate for the IAM, immutable audit, CloudTrail, and EventBridge resources needed
+before the separate calibration evidence bucket can be created. It is fixed to
+account `147229569658`, region `us-west-1`, and UE5-only managed tags. It never
+creates or changes the evidence bucket itself.
+
+The default is a read-only plan. Supply an explicit same-account IAM user or
+role as the future trust principal; the script never infers trust from the
+current caller and rejects root, wildcard, STS-session, or cross-account
+principals. A plan performs full discovery, fails closed on AccessDenied, and
+prints and optionally saves canonical current-state, desired-state, and later
+canary-interface JSON with independent SHA-256 hashes.
+
+```bash
+# Read-only plan. This makes no AWS changes.
+AWS_PROFILE=path AWS_REGION=us-west-1 PLAN_ONLY=true \
+TRUST_PRINCIPAL_ARN=arn:aws:iam::147229569658:user/<explicit-user> \
+PLAN_OUTPUT_DIR=/tmp/v2x-calibration-prerequisites-plan \
+  ./provision-calibration-evidence-prerequisites.sh
+
+# Apply is intentionally shown only as the exact reviewed transaction. Never
+# substitute unreviewed hashes, a different trust principal, or weaker strings.
+AWS_PROFILE=path AWS_REGION=us-west-1 PLAN_ONLY=false \
+TRUST_PRINCIPAL_ARN=arn:aws:iam::147229569658:user/<explicit-user> \
+TRUST_PRINCIPAL_ARN_CONFIRM=arn:aws:iam::147229569658:user/<explicit-user> \
+EXPECTED_CURRENT_STATE_HASH=<reviewed-current-sha256> \
+EXPECTED_DESIRED_STATE_HASH=<reviewed-desired-sha256> \
+ACKNOWLEDGED_FOREIGN_POLICY_SHA256S=<exact-comma-separated-reviewed-set> \
+CONFIRM_PREREQUISITES=CONFIGURE_CALIBRATION_EVIDENCE_PREREQUISITES \
+CONFIRM_COMPLIANCE_AUDIT=CREATE_COMPLIANCE_LOCKED_CALIBRATION_AUDIT_LOG \
+  ./provision-calibration-evidence-prerequisites.sh
+```
+
+Apply additionally requires an empty blocker list, exact acknowledgment of
+every preserved foreign audit-bucket `Allow`, a mode-0700/mode-0600 rollback
+bundle, and a conditionally created SSM concurrency lock. An existing lock is
+never cleared automatically as stale. After claiming its lock, the transaction
+re-reads and hashes the normalized current state before its first non-lock
+mutation. A failed, interrupted, or non-convergent apply deliberately retains
+its owned lock and prints the rollback bundle plus the manual recovery gate;
+only exact successful readback clears it. Never clear a failed lock until a
+separate review has compared its token and rollback bundle with a fresh
+plan-only state. Successful release itself is fail-closed: the script must read
+back the exact owned value, delete it, and then receive exact
+`ParameterNotFound`. A read error, ownership mismatch, delete error, surviving
+parameter, or ambiguous absence exits nonzero and suppresses the verified
+banner. Failure diagnostics distinguish the last confirmed states: `owned`,
+`ownership_lost`, and `delete_accepted_unverified`; only `confirmed_absent` is
+reported as cleared. A successful read after deletion is separately reported as
+`delete_accepted_still_present`. In particular, an accepted delete followed by
+AccessDenied does not claim that the lock still exists—it requires a fresh exact
+`GetParameter` result, with only `ParameterNotFound` accepted. The transaction
+creates the audit bucket
+with Object Lock at creation, applies a 365-day COMPLIANCE default, denies
+deletion and retention mutation, reconciles the least-privilege writer and
+read-only planner roles, configures the fixed single-region write-only trail,
+and sends integrity-control mutation events to a dedicated 365-day CloudWatch
+log group. Existing stronger COMPLIANCE defaults are preserved rather than
+reduced. Existing managed IAM roles with a non-root path or any permissions
+boundary fail closed. The monitoring pattern covers the fixed buckets, trail,
+IAM roles, EventBridge controls, CloudWatch Logs controls, and SSM apply lock.
+CloudTrail remains the durable management-event record: the EventBridge rule or
+its log destination cannot guarantee delivery of an event that disables that
+same path, so an independent external human notification remains required
+before closeout. The CloudWatch Logs resource policy follows the AWS-documented
+`events.amazonaws.com` plus `delivery.logs.amazonaws.com` delivery principals
+and scopes them to that exact log group; the later gate must prove a fixed-rule
+event actually arrives because Logs delivery does not support reliable
+per-rule `SourceArn` scoping. It then performs bounded exact readback before
+releasing its own lock. The audit bucket and locked objects are retained during
+rollback.
+
+After bootstrap, assume `V2XCalibrationEvidencePlanner` and require two stable
+plans through that role. Then run `provision-calibration-evidence-store.sh` in
+plan mode as a separate reviewed gate. The generated
+`later-canary-interface.json` defines—but does not execute—the subsequent
+locked canary proof: an explicit 90-day-or-longer COMPLIANCE write, exact
+content/version/retention readback, matching writer-session `PutObject` data
+event, EventBridge rule-fire log readback, and CloudTrail digest validation.
+The writer policy rejects explicit non-COMPLIANCE or sub-90-day headers; its
+`IfExists` form is required so multipart part/completion requests—which do not
+carry Object Lock headers—can finish. Therefore explicit headers plus final
+retention readback remain a hard canary acceptance gate. The canary interface
+also requires a separately approved read-only audit verifier with exact access
+to `AWSLogs/147229569658/*`; neither the writer nor planner is silently
+broadened for that later proof. Real holdouts remain out of scope.
+
+Deterministic mocked safety tests are available at:
+
+```bash
+./tests/test-calibration-evidence-prerequisites.sh
+```
+
+## Calibration evidence store
+
+`provision-calibration-evidence-store.sh` plans or creates the separate
+versioned, encrypted, public-blocked S3 bucket for write-once calibration
+manifests and holdout evidence. It defaults to read-only plan mode and prints a
+hash of the exact current state and a separate hash of the desired state.
+Applying requires both hashes plus the explicit irreversible Object Lock
+confirmation; the script refuses to retrofit the normal mutable state bucket
+or silently rewrite an existing Years-based retention default as Days. Default
+retention is 90-day COMPLIANCE mode. Do not upload a holdout until
+split/model/config choices are frozen and the authority manifest has passed
+review.
+
+The writer role and a named, actively logging CloudTrail trail with write-capable
+S3 object data events for the exact bucket prefix must already exist. Advanced
+selectors are accepted only when their complete field set proves unfiltered S3
+object writes for that prefix; read-only or event-name-filtered selectors are
+rejected. The bucket policy restricts writes to that role and denies object
+deletion, retention changes, and governance bypass. Existing lifecycle rules
+and their transition-size compatibility mode are preserved and verified.
+Per-object COMPLIANCE retention is the write-once control; administrators can
+still change bucket policy/defaults for future objects, so organization SCPs
+and CloudTrail monitoring should alert on bucket policy, lifecycle, and Object
+Lock configuration changes. Retention extension and legal holds are
+intentionally blocked for ordinary writers; changing that policy is a separate
+reviewed operation.
+
+```bash
+# Read-only plan: review current + desired state and retain both printed hashes.
+AWS_PROFILE=path AWS_REGION=us-west-1 \
+CLOUDTRAIL_TRAIL_NAME=<trail-with-this-bucket-data-events> \
+  ./provision-calibration-evidence-store.sh
+
+# Apply only the exact reviewed state.
+AWS_PROFILE=path AWS_REGION=us-west-1 PLAN_ONLY=false \
+CLOUDTRAIL_TRAIL_NAME=<trail-with-this-bucket-data-events> \
+EVIDENCE_WRITER_ROLE_ARN=arn:aws:iam::<account>:role/V2XCalibrationEvidenceWriter \
+EXPECTED_CURRENT_STATE_HASH=<reviewed-hash> \
+EXPECTED_DESIRED_STATE_HASH=<reviewed-desired-hash> \
+CONFIRM_OBJECT_LOCK_IRREVERSIBLE=CONFIGURE_OBJECT_LOCKED_EVIDENCE_BUCKET \
+  ./provision-calibration-evidence-store.sh
+```
+
+Before the first mutation the script stores mode-0700 rollback evidence. A new
+empty bucket can be removed if provisioning fails. After any COMPLIANCE-locked
+object is uploaded, deletion is impossible until retention expires; this is the
+intended property, not a reversible deployment. A partial apply is recovered by
+running a fresh plan, reviewing its new hash, and reconciling again. The script
+does not upload a canary or holdout object.
+
 ## Security note
 
 Do **not** paste AWS access keys into chat or commit them to git.
@@ -17,7 +162,7 @@ If you already shared credentials, treat them as compromised:
 ## Prereqs
 
 - AWS CLI v2 authenticated (recommended: SSO or a named profile)
-- `jq` and `zip` available
+- `jq`, `sha256sum`, and `zip` available
 
 ## Provision
 

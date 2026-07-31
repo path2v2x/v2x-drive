@@ -1,6 +1,8 @@
 import copy
 import json
 import hashlib
+import math
+from types import SimpleNamespace
 
 import pytest
 import tools.verify_phase4_live as live_probe
@@ -11,6 +13,7 @@ from tools.verify_phase4_live import (
     binary_digest,
     build_parser,
     choose_teleport_target,
+    expected_twin_camera_transform,
     project_world_xyz,
     receive_binary_frame,
     receive_live_twin_frame_packet,
@@ -262,6 +265,10 @@ def twin_status(
                 "actor_id": actor_id,
                 "actor_present": True,
                 "actor_type": actor_type,
+                "raw_carla_location": {"x": x, "y": y, "z": 0.0},
+                "target_carla_location": {"x": x, "y": y, "z": 0.3},
+                "raw_to_target_planar_m": 0.0,
+                "placement_planar_error_m": None,
                 "carla_transform": {
                     "location": {"x": x, "y": y, "z": 0.3},
                     "rotation": {"pitch": 0.0, "yaw": 12.0, "roll": 0.0},
@@ -318,6 +325,13 @@ def test_rejects_incomplete_or_nonfinite_twin_lens_model(mutate):
     hello = twin_camera_hello()
     mutate(hello)
     with pytest.raises(VerificationError, match="lens geometry is invalid"):
+        validate_twin_camera_model(hello, "ch1")
+
+
+def test_metadata_canary_rejects_complete_nondefault_twin_lens_model():
+    hello = twin_camera_hello()
+    hello["camera_model"]["lens"]["lens_k"] = -0.9
+    with pytest.raises(VerificationError, match="non-default CARLA lens model"):
         validate_twin_camera_model(hello, "ch1")
 
 
@@ -414,6 +428,213 @@ def test_rr_sensor_zero_transform_uses_tracked_config_proof():
     )
     assert evidence["position_error_m"] is None
     assert evidence["configured_position_error_m"] == 0.0
+
+
+def test_expected_camera_transform_uses_carla010_opendrive_georeference(tmp_path):
+    from v2x_common.geodesy import TransverseMercator
+
+    georeference = (
+        "+proj=tmerc +lat_0=37.9 +lon_0=-122.3 +k=0.75 "
+        "+x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
+    )
+    projection = TransverseMercator.from_proj_string(georeference)
+    latitude, longitude = projection.inverse(300.0, 150.0)
+
+    class Carla010Map:
+        name = "Richmond_Carla010_Shared_Transform_Regression"
+
+        def transform_to_geolocation(self, location):
+            lat, lon = projection.inverse(float(location.x), -float(location.y))
+            return SimpleNamespace(latitude=lat, longitude=lon, altitude=0.0)
+
+        def to_opendrive(self):
+            return (
+                "<OpenDRIVE><header><geoReference><![CDATA["
+                + georeference
+                + "]]></geoReference></header></OpenDRIVE>"
+            )
+
+        def get_waypoint(self, location, project_to_road=True):
+            assert project_to_road is True
+            return SimpleNamespace(
+                transform=SimpleNamespace(
+                    location=SimpleNamespace(x=location.x, y=location.y, z=2.5)
+                )
+            )
+
+    carla_map = Carla010Map()
+    world = SimpleNamespace(get_map=lambda: carla_map)
+    camera = {
+        "id": "ch1",
+        "height_m": 7.0,
+        "pitch_deg": -39.2,
+        "yaw_deg": -46.06,
+        "heading_deg": 200.0,
+        "roll_deg": 1.0,
+        "intrinsics": {
+            "fx": 1325.4,
+            "fy": 1325.4,
+            "cx": 1280.0,
+            "cy": 960.0,
+            "width": 2560,
+            "height": 1920,
+        },
+        "twin_pose": {
+            "forward_offset_m": 1.25,
+            "right_offset_m": -0.5,
+            "height_offset_m": 0.4,
+            "pitch_offset_deg": 0.5,
+            "yaw_offset_deg": 2.0,
+            "roll_offset_deg": -0.25,
+        },
+    }
+    cameras_path = tmp_path / "cameras.json"
+    cameras_path.write_text(
+        json.dumps({
+            "site": {"lat": latitude, "lon": longitude},
+            "cameras": [camera],
+        })
+    )
+
+    shared = live_probe.compute_twin_camera_transform(
+        carla_map,
+        {"lat": latitude, "lon": longitude},
+        camera,
+    )
+    expected = expected_twin_camera_transform(world, cameras_path, "ch1")
+
+    assert expected["transform"]["location"] == pytest.approx({
+        "x": shared.location.x,
+        "y": shared.location.y,
+        "z": shared.location.z,
+    })
+    assert expected["transform"]["rotation"] == pytest.approx({
+        "pitch": shared.rotation.pitch,
+        "yaw": shared.rotation.yaw,
+        "roll": shared.rotation.roll,
+    })
+    assert expected["projection"]["source"] == "opendrive_georeference"
+    assert expected["projection"]["strict"] is True
+    assert expected["projection"]["map_origin_error_m"] == pytest.approx(
+        0.0, abs=2e-5
+    )
+    assert expected["projection"]["map_name"] == carla_map.name
+    assert expected["projection"]["opendrive_sha256"] == hashlib.sha256(
+        carla_map.to_opendrive().encode()
+    ).hexdigest()
+    assert len(expected["projection"]["georeference_sha256"]) == 64
+    # A stale degree-to-metre approximation ignores the OpenDRIVE k=0.75
+    # scale; the tracked inverse must retain the requested projected anchor.
+    assert math.hypot(shared.location.x, shared.location.y) > 300.0
+
+
+def _strict_projection_inputs(tmp_path, carla_map, name):
+    origin = carla_map.transform_to_geolocation(SimpleNamespace(x=0, y=0, z=0))
+    camera = {
+        "id": "ch1",
+        "height_m": 7.0,
+        "pitch_deg": -39.2,
+        "yaw_deg": -46.06,
+        "heading_deg": 200.0,
+        "intrinsics": {
+            "fx": 1325.4,
+            "fy": 1325.4,
+            "cx": 1280.0,
+            "cy": 960.0,
+            "width": 2560,
+            "height": 1920,
+        },
+    }
+    path = tmp_path / f"{name}.json"
+    path.write_text(json.dumps({
+        "site": {"lat": origin.latitude, "lon": origin.longitude},
+        "cameras": [camera],
+    }))
+    return SimpleNamespace(get_map=lambda: carla_map), path
+
+
+class _StrictProjectionMap:
+    def __init__(self, name, opendrive):
+        self.name = name
+        self._opendrive = opendrive
+
+    def transform_to_geolocation(self, _location):
+        return SimpleNamespace(latitude=37.9, longitude=-122.3, altitude=0.0)
+
+    def to_opendrive(self):
+        if self._opendrive is None:
+            raise AttributeError("OpenDRIVE unavailable")
+        return self._opendrive
+
+    def get_waypoint(self, location, project_to_road=True):
+        return SimpleNamespace(transform=SimpleNamespace(location=location))
+
+
+@pytest.mark.parametrize(
+    ("name", "opendrive", "message"),
+    [
+        ("missing", None, "usable OpenDRIVE georeference"),
+        (
+            "malformed",
+            "<OpenDRIVE><header><geoReference>not-a-projection"
+            "</geoReference></header></OpenDRIVE>",
+            "usable OpenDRIVE georeference",
+        ),
+        (
+            "duplicate",
+            "<OpenDRIVE><header>"
+            "<geoReference>+proj=tmerc +lat_0=37.9 +lon_0=-122.3 "
+            "+datum=WGS84 +units=m</geoReference>"
+            "<geoReference>+proj=tmerc +lat_0=0 +lon_0=0 "
+            "+datum=WGS84 +units=m</geoReference>"
+            "</header></OpenDRIVE>",
+            "usable OpenDRIVE georeference",
+        ),
+        (
+            "wrong-map",
+            "<OpenDRIVE><header><geoReference><![CDATA["
+            "+proj=tmerc +lat_0=0 +lon_0=0 +k=1 +x_0=0 +y_0=0 "
+            "+datum=WGS84 +units=m +no_defs"
+            "]]></geoReference></header></OpenDRIVE>",
+            "disagrees with the CARLA map origin",
+        ),
+    ],
+)
+def test_live_camera_acceptance_rejects_missing_malformed_or_wrong_georef(
+    tmp_path, name, opendrive, message
+):
+    carla_map = _StrictProjectionMap(f"strict-{name}", opendrive)
+    world, cameras_path = _strict_projection_inputs(
+        tmp_path, carla_map, name
+    )
+
+    with pytest.raises(VerificationError, match="shared rig model") as raised:
+        expected_twin_camera_transform(world, cameras_path, "ch1")
+
+    assert message in str(raised.value.__cause__)
+
+
+def test_nonstrict_projection_exposes_fallback_as_diagnostic(tmp_path):
+    carla_map = _StrictProjectionMap("diagnostic-fallback", None)
+    world, cameras_path = _strict_projection_inputs(
+        tmp_path, carla_map, "diagnostic"
+    )
+
+    expected = expected_twin_camera_transform(
+        world,
+        cameras_path,
+        "ch1",
+        require_opendrive_georeference=False,
+    )
+
+    assert expected["projection"] == {
+        "source": "origin_centered_fallback",
+        "strict": False,
+        "map_origin_error_m": None,
+        "map_name": "diagnostic-fallback",
+        "opendrive_sha256": None,
+        "georeference_sha256": None,
+    }
 
 
 def test_projects_world_point_through_fingerprinted_camera_model():
@@ -839,6 +1060,21 @@ def test_exact_twin_sample_proves_actor_role_type_and_transform():
     assert sample["role_name"] == "twin_object"
     assert sample["position_error_m"] == 0.0
     assert sample["rotation_error_deg"] == 0.0
+    assert sample["raw_to_target_planar_m"] == 0.0
+    assert sample["placement_accuracy_claimed"] is False
+
+
+def test_twin_object_rejects_planar_lane_snap_masking():
+    status = twin_status()
+    status["objects"][0]["raw_carla_location"]["x"] = 7.0
+    with pytest.raises(VerificationError, match="planar placement diverges"):
+        validate_twin_object_sample(
+            status,
+            "global_car_run_1",
+            FakeWorld([FakeActor()]),
+            position_tolerance_m=0.5,
+            rotation_tolerance_deg=1.0,
+        )
 
 
 @pytest.mark.parametrize(

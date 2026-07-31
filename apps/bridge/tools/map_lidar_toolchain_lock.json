@@ -1,0 +1,35 @@
+{
+  "runtime": {
+    "blas": {
+      "configuration": "OpenBLAS 0.3.31.dev  USE64BITINT DYNAMIC_ARCH NO_AFFINITY Haswell MAX_THREADS=64",
+      "name": "scipy-openblas",
+      "version": "0.3.31.dev"
+    },
+    "packages": {
+      "Pillow": "10.2.0",
+      "cryptography": "41.0.7",
+      "laspy": "2.7.0",
+      "numpy": "2.4.2",
+      "pypdf": "6.14.2",
+      "pyproj": "3.7.2",
+      "scipy": "1.17.1"
+    },
+    "platform": {
+      "machine": "x86_64",
+      "system": "Linux"
+    },
+    "python": {
+      "implementation": "CPython",
+      "version": "3.12.3"
+    },
+    "thread_environment": {
+      "MKL_NUM_THREADS": "1",
+      "NUMEXPR_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_CORETYPE": "Haswell",
+      "OPENBLAS_NUM_THREADS": "1",
+      "VECLIB_MAXIMUM_THREADS": "1"
+    }
+  },
+  "schema": "v2x-map-lidar-toolchain-lock/v1"
+}

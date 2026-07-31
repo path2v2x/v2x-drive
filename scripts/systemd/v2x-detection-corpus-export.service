@@ -1,0 +1,25 @@
+[Unit]
+Description=Freeze a sanitized hash-bound V2X detection corpus snapshot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=path
+Group=path
+WorkingDirectory=/home/path/V2XCarla/v2x-backend
+Environment=PYTHON_BIN=/home/path/V2XCarla/perception-venv/bin/python
+Environment=V2X_DETECTION_EXPORT_API=https://w0j9m7dgpg.execute-api.us-west-1.amazonaws.com
+Environment=V2X_DETECTION_EXPORT_ROOT=/home/path/V2XCarla/v2x-evidence/detection-corpus
+EnvironmentFile=-/etc/v2x-detection-corpus-export.env
+ExecStart=/bin/sh -c 'exec "$PYTHON_BIN" apps/perception/tools/export_detection_corpus.py "$V2X_DETECTION_EXPORT_API" "$V2X_DETECTION_EXPORT_ROOT" --window-hours 24 --retention-count 72 --minimum-free-bytes 2147483648'
+UMask=0077
+TimeoutStartSec=15min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/path/V2XCarla/v2x-evidence/detection-corpus

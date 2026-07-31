@@ -2338,6 +2338,12 @@ print("DONE one-failure", flush=True)
                 replacement["media_clock"]["media_timestamp_utc"],
                 "2026-07-10T03:57:23.388Z",
             )
+            first_session = first["media_clock"]["media_clock"]["session_id"]
+            replacement_session = (
+                replacement["media_clock"]["media_clock"]["session_id"]
+            )
+            self.assertRegex(first_session, r"^capture-v1-[0-9a-f-]+$")
+            self.assertNotEqual(first_session, replacement_session)
             # The prior cursor is never trusted merely because its mapped time
             # remains receipt-plausible. A second exact fragment match is required.
             self.assertEqual(len(clock_calls), 2)

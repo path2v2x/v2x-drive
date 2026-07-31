@@ -5,3 +5,8 @@ boto3
 websockets
 pytest
 pytest-asyncio
+scipy
+laspy[lazrs]
+pyproj
+cryptography>=41
+pypdf==6.14.2

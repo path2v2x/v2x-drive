@@ -93,6 +93,12 @@ class Config:
     # Both only activate on the georeferenced RFS map. "off" disables.
     TWIN_RIG: str = "on"
     TWIN_SYNC: str = "on"
+    # Opt-in migration gate.  "off" preserves legacy GPS-derived placement;
+    # "strict" requires the reviewed localization contract and never falls back.
+    TWIN_REVIEWED_PLACEMENT: str = "off"
+    # Required only when strict reviewed placement is enabled.
+    TWIN_STATIC_CALIBRATION_MANIFEST: str = ""
+    TWIN_REVIEW_AUTHORITY_FILE: str = ""
     # Shared camera-pose config (also read by apps/perception).
     CAMERAS_JSON: str = ""
     # Perception runs on the same host, so poll it directly instead of

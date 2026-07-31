@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://path2v2x.net/schemas/reviewed-vehicle-localization-v1.schema.json",
+  "title": "Reviewed vehicle localization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "event_id", "camera_id", "global_track_id", "trajectory_id",
+    "sample_index", "source", "contact", "timing", "review", "identity",
+    "placement", "authority", "contract_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "v2x-reviewed-vehicle-localization/v1"},
+    "event_id": {"type": "string", "minLength": 1},
+    "camera_id": {"type": "string", "minLength": 1},
+    "global_track_id": {"type": "string", "minLength": 1},
+    "trajectory_id": {"type": "string", "minLength": 1},
+    "sample_index": {"type": "integer", "minimum": 0},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frame", "detector", "camera", "map"],
+      "properties": {
+        "frame": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source_kind", "sha256", "mask_sha256", "native_resolution", "frame_number", "inference_manifest_sha256", "frame_pixel_sha256", "mask_pixel_sha256", "detector_output_sha256"],
+          "properties": {
+            "source_kind": {"const": "persisted_native_frame_and_instance_mask"},
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "mask_sha256": {"$ref": "#/$defs/sha256"},
+            "native_resolution": {
+              "type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [
+                {"type": "integer", "minimum": 1},
+                {"type": "integer", "minimum": 1}
+              ], "items": false
+            },
+            "frame_number": {"type": "integer", "minimum": 0},
+            "inference_manifest_sha256": {"$ref": "#/$defs/sha256"},
+            "frame_pixel_sha256": {"$ref": "#/$defs/sha256"},
+            "mask_pixel_sha256": {"$ref": "#/$defs/sha256"},
+            "detector_output_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "detector": {
+          "type": "object", "additionalProperties": false,
+          "required": ["model_sha256", "config_sha256"],
+          "properties": {
+            "model_sha256": {"$ref": "#/$defs/sha256"},
+            "config_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "camera": {
+          "type": "object", "additionalProperties": false,
+          "required": ["cameras_json_sha256", "camera_config_sha256", "intrinsics_artifact_sha256", "intrinsics_report_sha256", "static_calibration_sha256"],
+          "properties": {
+            "cameras_json_sha256": {"$ref": "#/$defs/sha256"},
+            "camera_config_sha256": {"$ref": "#/$defs/sha256"},
+            "intrinsics_artifact_sha256": {"$ref": "#/$defs/sha256"},
+            "intrinsics_report_sha256": {"$ref": "#/$defs/sha256"},
+            "static_calibration_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "map": {
+          "type": "object", "additionalProperties": false,
+          "required": ["name", "opendrive_sha256"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "opendrive_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        }
+      }
+    },
+    "contact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "left_ground_pixel", "right_ground_pixel", "footprint_midpoint_pixel", "covariance_px2"],
+      "properties": {
+        "method": {"const": "reviewed_vehicle_footprint_midpoint"},
+        "left_ground_pixel": {"$ref": "#/$defs/point2"},
+        "right_ground_pixel": {"$ref": "#/$defs/point2"},
+        "footprint_midpoint_pixel": {"$ref": "#/$defs/point2"},
+        "covariance_px2": {"$ref": "#/$defs/matrix2"}
+      }
+    },
+    "timing": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "trusted", "session_id", "pts_seconds", "media_timestamp_utc", "timestamp_error_ms"],
+      "properties": {
+        "method": {"const": "exact_same_session_pts"},
+        "trusted": {"const": true},
+        "session_id": {"type": "string", "minLength": 1},
+        "pts_seconds": {"type": "number", "minimum": 0},
+        "media_timestamp_utc": {"type": "string", "format": "date-time"},
+        "timestamp_error_ms": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "review": {
+      "type": "object", "additionalProperties": false,
+      "required": ["decision", "reviewer", "consensus", "factor_graph", "independent_reference"],
+      "properties": {
+        "decision": {"const": "accepted"},
+        "reviewer": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "id"],
+          "properties": {
+            "kind": {"const": "human"},
+            "id": {"type": "string", "minLength": 1}
+          }
+        },
+        "consensus": {
+          "type": "object", "additionalProperties": false,
+          "required": ["method", "artifact_sha256", "reviewer_ids"],
+          "properties": {
+            "method": {"const": "independent_review_consensus"},
+            "artifact_sha256": {"$ref": "#/$defs/sha256"},
+            "reviewer_ids": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+          }
+        },
+        "factor_graph": {
+          "type": "object", "additionalProperties": false,
+          "required": ["artifact_sha256", "acceptance_eligible"],
+          "properties": {
+            "artifact_sha256": {"$ref": "#/$defs/sha256"},
+            "acceptance_eligible": {"const": true}
+          }
+        },
+        "independent_reference": {
+          "type": "object", "additionalProperties": false,
+          "required": ["artifact_sha256", "acceptance_eligible"],
+          "properties": {
+            "artifact_sha256": {"$ref": "#/$defs/sha256"},
+            "acceptance_eligible": {"const": true}
+          }
+        }
+      }
+    },
+    "identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "global_track_id", "trajectory_id", "association_method", "evidence_sha256", "camera_ids", "cross_camera_transition_sha256", "transition"],
+      "properties": {
+        "status": {"const": "unambiguous"},
+        "global_track_id": {"type": "string", "minLength": 1},
+        "trajectory_id": {"type": "string", "minLength": 1},
+        "association_method": {"const": "reviewed_multicamera_trajectory"},
+        "evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "camera_ids": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "cross_camera_transition_sha256": {"$ref": "#/$defs/sha256"},
+        "transition": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["previous_event_id", "accepted", "ambiguity", "appearance_similarity", "transit_seconds", "distance_m", "speed_mps", "acceleration_mps2", "trajectory_covariance_m2", "pair_evidence_sha256"],
+              "properties": {
+                "previous_event_id": {"type": "string", "minLength": 1},
+                "accepted": {"const": true},
+                "ambiguity": {"const": false},
+                "appearance_similarity": {"type": "number", "minimum": 0.6, "maximum": 1},
+                "transit_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 30},
+                "distance_m": {"type": "number", "minimum": 0},
+                "speed_mps": {"type": "number", "minimum": 0, "maximum": 45},
+                "acceleration_mps2": {"type": ["number", "null"], "minimum": -8, "maximum": 8},
+                "trajectory_covariance_m2": {"$ref": "#/$defs/matrix3"},
+                "pair_evidence_sha256": {"$ref": "#/$defs/sha256"}
+              }
+            }
+          ]
+        }
+      }
+    },
+    "placement": {
+      "type": "object", "additionalProperties": false,
+      "required": ["coordinate_frame", "position_semantics", "position_m", "covariance_m2", "uncertainty_m", "heading_deg", "dimensions_m", "blueprint_family", "independent_reference", "blueprint"],
+      "properties": {
+        "coordinate_frame": {"const": "carla_world"},
+        "position_semantics": {"const": "ue5_actor_center"},
+        "position_m": {
+          "type": "object", "additionalProperties": false,
+          "required": ["x", "y", "z"],
+          "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"}}
+        },
+        "covariance_m2": {"$ref": "#/$defs/matrix3"},
+        "uncertainty_m": {"type": "number", "minimum": 0, "maximum": 2},
+        "heading_deg": {"type": "number"},
+        "dimensions_m": {
+          "type": "object", "additionalProperties": false,
+          "required": ["length", "width", "height"],
+          "properties": {
+            "length": {"type": "number", "minimum": 0.1, "maximum": 30},
+            "width": {"type": "number", "minimum": 0.1, "maximum": 5},
+            "height": {"type": "number", "minimum": 0.1, "maximum": 6}
+          }
+        },
+        "blueprint_family": {"enum": ["passenger_car", "truck", "bus"]},
+        "independent_reference": {
+          "type": "object", "additionalProperties": false,
+          "required": ["position_m", "error_m"],
+          "properties": {
+            "position_m": {"$ref": "#/$defs/position3"},
+            "error_m": {"type": "number", "minimum": 0, "maximum": 2}
+          }
+        },
+        "blueprint": {
+          "type": "object", "additionalProperties": false,
+          "required": ["catalog_sha256", "pool_sha256", "selected_blueprint_id", "expected_dimensions_m", "dimension_tolerance_m"],
+          "properties": {
+            "catalog_sha256": {"$ref": "#/$defs/sha256"},
+            "pool_sha256": {"$ref": "#/$defs/sha256"},
+            "selected_blueprint_id": {"type": "string", "minLength": 1},
+            "expected_dimensions_m": {"$ref": "#/$defs/dimensions"},
+            "dimension_tolerance_m": {"type": "number", "minimum": 0, "maximum": 0.25}
+          }
+        }
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scheme", "key_id", "signature"],
+      "properties": {
+        "scheme": {"const": "hmac-sha256-v1"},
+        "key_id": {"type": "string", "minLength": 1},
+        "signature": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "contract_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "position3": {
+      "type": "object", "additionalProperties": false,
+      "required": ["x", "y", "z"],
+      "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "z": {"type": "number"}}
+    },
+    "dimensions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["length", "width", "height"],
+      "properties": {
+        "length": {"type": "number", "minimum": 0.1, "maximum": 30},
+        "width": {"type": "number", "minimum": 0.1, "maximum": 5},
+        "height": {"type": "number", "minimum": 0.1, "maximum": 6}
+      }
+    },
+    "point2": {"type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{"type": "number"}, {"type": "number"}], "items": false},
+    "matrix2": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}}},
+    "matrix3": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}}}
+  }
+}

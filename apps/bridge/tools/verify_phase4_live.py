@@ -21,7 +21,11 @@ import uuid
 
 import websockets
 
-from digital_twin_bridge.twin_camera_rig import TWIN_LENS_ATTRIBUTE_KEYS
+from digital_twin_bridge.twin_camera_rig import (
+    CARLA_DEFAULT_PINHOLE_LENS,
+    TWIN_LENS_ATTRIBUTE_KEYS,
+    compute_twin_camera_transform,
+)
 
 
 DEFAULT_TWIN_YOLO_PYTHON = Path("/home/path/V2XCarla/perception-venv/bin/python")
@@ -267,21 +271,6 @@ def _carla_rotation_axes(rotation):
         (cy * sp * sr - sy * cr, sy * sp * sr + cy * cr, -cp * sr),
         (-cy * sp * cr - sy * sr, -sy * sp * cr + cy * sr, cp * cr),
     )
-
-
-CARLA_DEFAULT_PINHOLE_LENS = {
-    # A CARLA sensor maintainer confirms the 0.9.x default tuple is the
-    # undistorted pinhole state (carla-simulator/carla#3198).  The parameters
-    # are not OpenCV Brown-Conrady coefficients (#3130).  UE5/0.10 equivalence
-    # is still enforced empirically by the unchanged visual/motion gates.
-    # Accept only actor-observed defaults; every other tuple remains fail closed.
-    "lens_k": -1.0,
-    "lens_kcube": 0.0,
-    "lens_circle_falloff": 5.0,
-    "lens_circle_multiplier": 0.0,
-    "lens_x_size": 0.08,
-    "lens_y_size": 0.08,
-}
 
 
 def project_world_xyz(point, camera_model):
@@ -946,13 +935,18 @@ def cameras_config_fingerprint(path):
     return hashlib.sha256(canonical).hexdigest()
 
 
-def expected_twin_camera_transform(world, path, camera_id):
-    """Recompute the configured sensor pose independently for RR/CARLA 0.10.
+def expected_twin_camera_transform(
+    world, path, camera_id, *, require_opendrive_georeference=True
+):
+    """Recompute the configured sensor pose through the tracked rig model.
 
     RR camera actors are resolvable by ID but are absent from world snapshots,
     and an independent client receives a zero transform for them.  Bind the
     server-advertised spawn transform to the exact tracked site/camera JSON and
-    the live map georeference instead of accepting that zero placeholder.
+    the live map georeference instead of accepting that zero placeholder.  This
+    deliberately calls the same shared GPS projection and pose composition as
+    ``TwinCameraRig.spawn``; a verifier-local flat-earth approximation would not
+    reproduce RR/CARLA 0.10's OpenDRIVE georeference.
     """
     try:
         payload = json.loads(Path(path).read_text())
@@ -960,70 +954,43 @@ def expected_twin_camera_transform(world, path, camera_id):
         camera = next(
             item for item in payload["cameras"] if item.get("id") == camera_id
         )
-        carla_map = world.get_map()
-        import carla
-
-        origin = carla_map.transform_to_geolocation(carla.Location())
-        latitude = float(site["lat"])
-        longitude = float(site["lon"])
-        if hasattr(carla_map, "geolocation_to_transform"):
-            corrected_latitude = 2.0 * float(origin.latitude) - latitude
-            projected = carla_map.geolocation_to_transform(
-                carla.GeoLocation(
-                    latitude=corrected_latitude,
-                    longitude=longitude,
-                    altitude=0.0,
-                )
-            )
-            location = getattr(projected, "location", projected)
-        else:
-            meters_per_degree_latitude = 111_320.0
-            meters_per_degree_longitude = (
-                meters_per_degree_latitude
-                * math.cos(math.radians(float(origin.latitude)))
-            )
-            location = carla.Location(
-                x=(longitude - float(origin.longitude))
-                * meters_per_degree_longitude,
-                y=-(
-                    (latitude - float(origin.latitude))
-                    * meters_per_degree_latitude
-                ),
-                z=0.0,
-            )
-        waypoint = carla_map.get_waypoint(location, project_to_road=True)
-        if waypoint is not None:
-            location.z = float(waypoint.transform.location.z)
-        pose = camera.get("twin_pose") or {}
-        yaw = (
-            float(camera["heading_deg"])
-            + float(camera["yaw_deg"])
-            + float(pose.get("yaw_offset_deg", 0.0))
-            - 90.0
+        transform, projection = compute_twin_camera_transform(
+            world.get_map(),
+            site,
+            camera,
+            require_opendrive_georeference=require_opendrive_georeference,
+            return_projection_provenance=True,
         )
-        yaw = (yaw + 180.0) % 360.0 - 180.0
-        pitch = float(camera["pitch_deg"]) + float(
-            pose.get("pitch_offset_deg", 0.0)
-        )
-        location.z += float(camera["height_m"]) + float(
-            pose.get("height_offset_m", 0.0)
-        )
-        forward = float(pose.get("forward_offset_m", 0.5))
-        location.x += forward * math.cos(math.radians(yaw))
-        location.y += forward * math.sin(math.radians(yaw))
-    except (KeyError, OSError, StopIteration, TypeError, ValueError) as exc:
+    except (
+        AttributeError,
+        KeyError,
+        OSError,
+        RuntimeError,
+        StopIteration,
+        TypeError,
+        ValueError,
+    ) as exc:
         raise VerificationError(
-            "tracked camera transform cannot be independently recomputed"
+            "tracked camera transform cannot be recomputed through the shared rig model"
         ) from exc
     expected = {
         "location": {
-            "x": float(location.x),
-            "y": float(location.y),
-            "z": float(location.z),
+            "x": float(transform.location.x),
+            "y": float(transform.location.y),
+            "z": float(transform.location.z),
         },
-        "rotation": {"pitch": pitch, "yaw": yaw, "roll": 0.0},
+        "rotation": {
+            "pitch": float(transform.rotation.pitch),
+            "yaw": float(transform.rotation.yaw),
+            "roll": float(transform.rotation.roll),
+        },
     }
-    return _finite_transform_payload(expected, "tracked camera transform")
+    return {
+        "transform": _finite_transform_payload(
+            expected, "tracked camera transform"
+        ),
+        "projection": projection,
+    }
 
 
 def validate_twin_camera_model(
@@ -1094,6 +1061,15 @@ def validate_twin_camera_model(
         for value in lens.values()
     ):
         raise VerificationError("twin camera model lens geometry is invalid")
+    if any(
+        not math.isclose(
+            float(lens[key]), expected, rel_tol=0.0, abs_tol=1e-9
+        )
+        for key, expected in CARLA_DEFAULT_PINHOLE_LENS.items()
+    ):
+        raise VerificationError(
+            "twin camera model rejects a non-default CARLA lens model"
+        )
     return {
         "camera_id": expected_camera_id,
         "actor_id": actor_id,
@@ -1377,6 +1353,26 @@ def validate_twin_object_sample(
     reported = _finite_transform_payload(
         item.get("carla_transform"), "twin_status object"
     )
+    raw_location = item.get("raw_carla_location")
+    target_location = item.get("target_carla_location")
+    if not isinstance(raw_location, dict) or not isinstance(target_location, dict):
+        raise VerificationError(
+            "twin object has no raw/target CARLA placement evidence"
+        )
+    try:
+        raw_x = float(raw_location["x"])
+        raw_y = float(raw_location["y"])
+        target_x = float(target_location["x"])
+        target_y = float(target_location["y"])
+        reported_raw_to_target = float(item.get("raw_to_target_planar_m"))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise VerificationError(
+            "twin object raw placement evidence is invalid"
+        ) from exc
+    if not all(math.isfinite(value) for value in (
+        raw_x, raw_y, target_x, target_y, reported_raw_to_target
+    )):
+        raise VerificationError("twin object raw placement evidence is invalid")
     try:
         snapshot = world.get_snapshot().find(actor_id)
     except (AttributeError, RuntimeError):
@@ -1419,6 +1415,15 @@ def validate_twin_object_sample(
         for axis in ("pitch", "yaw", "roll")
     }
     rotation_error = max(rotation_errors.values())
+    raw_planar_error = math.hypot(target_x - raw_x, target_y - raw_y)
+    if (
+        raw_planar_error > 0.10
+        or reported_raw_to_target > 0.10
+        or abs(raw_planar_error - reported_raw_to_target) > 0.01
+    ):
+        raise VerificationError(
+            "twin actor planar placement diverges from GPS-derived CARLA location"
+        )
     if position_error > position_tolerance_m or rotation_error > rotation_tolerance_deg:
         raise VerificationError(
             "twin_status transform does not match the mapped UE5 CARLA actor: "
@@ -1442,6 +1447,9 @@ def validate_twin_object_sample(
         "transform_source": transform_source,
         "position_error_m": round(position_error, 3),
         "rotation_error_deg": round(rotation_error, 3),
+        "raw_to_target_planar_m": round(raw_planar_error, 3),
+        "placement_accuracy_claimed": False,
+        "target_location": {"x": target_x, "y": target_y},
     }
 
 
@@ -1971,10 +1979,14 @@ async def verify_twin(args, world=None):
             cameras_config_fingerprint(args.cameras_json),
         )
         if world is not None:
+            expected_camera = expected_twin_camera_transform(
+                world, args.cameras_json, args.twin_camera
+            )
             evidence["validated_camera_model"]["expected_config_transform"] = (
-                expected_twin_camera_transform(
-                    world, args.cameras_json, args.twin_camera
-                )
+                expected_camera["transform"]
+            )
+            evidence["validated_camera_model"]["projection_provenance"] = (
+                expected_camera["projection"]
             )
             evidence["validated_camera_actor"] = validate_live_twin_camera_actor(
                 world, evidence["validated_camera_model"]
@@ -2494,11 +2506,11 @@ async def verify_twin_metadata(args, carla_module=None):
                 camera_config_fingerprint(args.cameras_json, camera_id),
                 evidence["cameras_config_sha256"],
             )
-            model["expected_config_transform"] = (
-                expected_twin_camera_transform(
-                    world, args.cameras_json, camera_id
-                )
+            expected_camera = expected_twin_camera_transform(
+                world, args.cameras_json, camera_id
             )
+            model["expected_config_transform"] = expected_camera["transform"]
+            model["projection_provenance"] = expected_camera["projection"]
             actor = validate_live_twin_camera_actor(world, model)
             _jpeg, jpeg_digest, frame_metadata = (
                 await receive_live_twin_frame_packet(

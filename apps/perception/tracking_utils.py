@@ -1,7 +1,15 @@
+import hashlib
+from pathlib import Path
+
 import numpy as np
 import torch
 import torchvision.transforms as T
-from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
+from torchvision.models import (
+    convnext_base,
+    ConvNeXt_Base_Weights,
+    mobilenet_v3_small,
+    MobileNet_V3_Small_Weights,
+)
 import torch.nn.functional as F
 import torch.nn as nn
 import cv2
@@ -40,6 +48,56 @@ class AppearanceExtractor:
         crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         
         input_tensor = self.transform(crop).unsqueeze(0).to(self.device)
+        embedding = self.model(input_tensor)
+        embedding = F.normalize(embedding, p=2, dim=1)
+        return embedding.cpu().numpy()[0]
+
+
+class VehicleAppearanceExtractor:
+    """Multi-view vehicle embeddings from the pinned ConvNeXt backbone."""
+
+    CHECKPOINT_NAME = "convnext_base-6075fbad.pth"
+    CHECKPOINT_SHA256 = (
+        "6075fbad31c688f9ed013922a59daf0fc2f4dc12e6e43bc01fa840c7bd1ca2cd"
+    )
+
+    def __init__(self, device=None):
+        if device is None:
+            self.device = (
+                'cuda' if torch.cuda.is_available()
+                else 'mps' if torch.backends.mps.is_available()
+                else 'cpu'
+            )
+        else:
+            self.device = device
+        print(f"Loading Vehicle Appearance Extractor on {self.device}...")
+        weights = ConvNeXt_Base_Weights.DEFAULT
+        model = convnext_base(weights=weights)
+        checkpoint = (
+            Path(torch.hub.get_dir()) / "checkpoints" / self.CHECKPOINT_NAME
+        )
+        if not checkpoint.is_file():
+            raise RuntimeError("pinned ConvNeXt vehicle checkpoint is unavailable")
+        actual_hash = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+        if actual_hash != self.CHECKPOINT_SHA256:
+            raise RuntimeError("ConvNeXt vehicle checkpoint hash mismatch")
+        model.classifier[2] = nn.Identity()
+        self.model = model.to(self.device).eval()
+        self.transform = weights.transforms()
+
+    @torch.no_grad()
+    def extract(self, frame, bbox):
+        x1, y1, x2, y2 = map(
+            int, [bbox['x1'], bbox['y1'], bbox['x2'], bbox['y2']]
+        )
+        height, width = frame.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(width, x2), min(height, y2)
+        if x2 - x1 < 20 or y2 - y1 < 20:
+            return None
+        crop = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2RGB)
+        tensor = torch.from_numpy(crop).permute(2, 0, 1)
+        input_tensor = self.transform(tensor).unsqueeze(0).to(self.device)
         embedding = self.model(input_tensor)
         embedding = F.normalize(embedding, p=2, dim=1)
         return embedding.cpu().numpy()[0]

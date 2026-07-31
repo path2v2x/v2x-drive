@@ -322,6 +322,12 @@ assert_contains "$MOCK_CLOUDFLARED_ARGS" 'tunnel --url http://localhost:8765'
 assert_contains "$ROOT/scripts/systemd/v2x-drive-link-health.service" 'EnvironmentFile=-/etc/v2x-drive-tunnel.env'
 assert_contains "$ROOT/infra/amplify/deploy.sh" 'RECOVERY_CONNECTED_DEPLOY_GATE'
 assert_contains "$ROOT/scripts/systemd/README.md" 'git -C /home/path/V2XCarla/v2x-backend stash push --include-untracked'
+assert_contains "$ROOT/scripts/v2x-calibration-worker.sh" '(($root.Mounts // []) | length == 0)'
+assert_contains "$ROOT/scripts/v2x-calibration-worker.sh" 'V2X_CALIBRATION_EXPECTED_IMAGE_ID'
+assert_contains "$ROOT/scripts/v2x-calibration-worker.sh" 'V2X_CALIBRATION_MAP_READY_TIMEOUT_SECONDS:-180'
+assert_contains "$ROOT/scripts/v2x-calibration-worker.sh" 'MAP_READY_TIMEOUT_SECONDS < 90 || MAP_READY_TIMEOUT_SECONDS > 300'
+assert_contains "$ROOT/scripts/v2x-calibration-worker.sh" 'timeout --signal=TERM --kill-after=5s'
+assert_contains "$ROOT/scripts/v2x-calibration-worker.sh" 'now - last_load_request >= 120.0'
 if grep -A20 'if path == "/detections/recent"' \
     "$ROOT/infra/aws-cli/provision-read-api.sh" | grep -Fq 'table.scan'; then
   fail '/detections/recent still uses unordered DynamoDB Scan'
