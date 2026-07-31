@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically check for perception feed recovery
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+Persistent=true
+Unit=v2x-feed-recovery.service
+
+[Install]
+WantedBy=timers.target

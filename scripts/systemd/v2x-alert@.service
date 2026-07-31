@@ -1,0 +1,12 @@
+[Unit]
+Description=V2X ops alert for %i failure
+
+[Service]
+Type=oneshot
+User=path
+Group=path
+StateDirectory=v2x-alerts
+StateDirectoryMode=0700
+Environment=STATE_DIR=/var/lib/v2x-alerts
+EnvironmentFile=-/etc/v2x-alerts.env
+ExecStart=/home/path/V2XCarla/v2x-backend/scripts/notify-alert.sh failure %i

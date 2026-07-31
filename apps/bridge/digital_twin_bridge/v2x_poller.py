@@ -99,6 +99,7 @@ class V2XPoller:
         # Note: Prop spawning is handled on the main thread (see __main__.py)
         # because CARLA actor operations are not thread-safe.
         resolved = 0
+        actor_owned = 0
         for item in (items if self._carla_map is not None else []):
             gps = item.get("gps_location", {})
             lat = gps.get("latitude")
@@ -117,6 +118,7 @@ class V2XPoller:
             # Only resolve location if the object doesn't already have
             # a spawned actor (the actor's live location is more accurate)
             if obj.carla_actor_id is not None:
+                actor_owned += 1
                 continue
 
             try:
@@ -135,9 +137,11 @@ class V2XPoller:
         # Stale actor destruction is handled on the main thread
 
         logger.info(
-            "V2X poll: %d items fetched, %d locations resolved, %d tracked.",
+            "V2X poll: %d items fetched, %d locations resolved, "
+            "%d actor-owned, %d tracked.",
             len(items),
             resolved,
+            actor_owned,
             self._registry.count,
         )
         return len(items)

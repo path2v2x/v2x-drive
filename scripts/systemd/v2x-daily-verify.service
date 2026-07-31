@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily V2X feed and twin green check
+OnFailure=v2x-alert@%n.service
+
+[Service]
+Type=oneshot
+User=path
+Group=path
+WorkingDirectory=/home/path/V2XCarla/v2x-backend
+ExecStart=/home/path/V2XCarla/v2x-backend/scripts/daily-verify.sh

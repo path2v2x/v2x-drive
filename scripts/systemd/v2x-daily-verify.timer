@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily V2X feed and twin green check
+
+[Timer]
+OnCalendar=*-*-* 15:00:00 UTC
+Persistent=true
+Unit=v2x-daily-verify.service
+
+[Install]
+WantedBy=timers.target
