@@ -1,4 +1,6 @@
 <script lang="ts">
+	import MermaidDiagram from '$lib/components/MermaidDiagram.svelte';
+
 	interface Node {
 		title: string;
 		detail: string;
@@ -62,6 +64,102 @@
 		{ from: 'Perception (RFS PC)', to: 'Twin server (RFS PC)', what: 'Per-camera detections with GPS position, recorded for 72 h', how: 'http://127.0.0.1:8091/detections/latest' },
 		{ from: 'Drive server (RFS PC)', to: 'CARLA (RFS PC)', what: 'World tick, ego control, sensors', how: 'CARLA RPC, localhost:2000' },
 		{ from: 'SUMO / VOICES / HIL tools', to: 'CARLA (RFS PC)', what: 'Sidecar clients sharing the same world', how: 'CARLA RPC :2000 (see below)' }
+	];
+
+	const systemDiagram = `flowchart LR
+  browser([Browser])
+  cams[/"4 pole cameras<br/>2560x1920 H.264"/]
+  subgraph rfs["RFS PC (path-rfs) - one nginx on :443, everything else on loopback"]
+    direction LR
+    subgraph drive["path2v2x/v2x-drive"]
+      web["drive-web<br/>static site<br/>/ /drive /live /timeline"]
+      ds["drive-server<br/>:8765 /ws<br/>publishes /data/"]
+      carla["CARLA 0.10<br/>:2000 (Docker)"]
+      mtx["MediaMTX relay + recorder<br/>:8888 /camera/<br/>:9996 /archive/ (72 h)"]
+    end
+    subgraph twin["path2v2x/v2x-digital-twin"]
+      ts["twin-server<br/>:8865 /twin /drive /camera-feeds<br/>:8190 /detections/ (72 h SQLite)"]
+      perc["v2x-perception service<br/>runs co-perception<br/>:8091 /detections/latest"]
+    end
+    subgraph sf["SimForgeinc/simforge-oss"]
+      studio["Studio Drive UI<br/>:5199 /dashboard/drive"]
+    end
+    subgraph cp["path2v2x/co-perception (jpark)"]
+      demux["camera-pipeline demux<br/>/tmp/camera_demux_chN.sock"]
+    end
+  end
+  cams -->|RTSP, one session per camera| demux
+  demux -->|H.264 access units| mtx
+  demux -->|H.264 access units| perc
+  perc -->|10 Hz poll| ts
+  mtx -->|RTSP :8554| ts
+  ds -->|RPC| carla
+  ds -->|/detections/history| ts
+  studio -->|WebSocket| ts
+  browser -->|https://path2v2x.net| web
+  browser -->|/ws| ds
+  browser -->|/camera/ /archive/| mtx
+  browser -->|/detections/| ts
+  browser -->|https://twin.path2v2x.net| studio`;
+
+	interface RepoRow {
+		repo: string;
+		url: string;
+		owns: string;
+		deploy: string;
+	}
+
+	const repos: RepoRow[] = [
+		{
+			repo: 'path2v2x/v2x-drive',
+			url: 'https://github.com/path2v2x/v2x-drive',
+			owns: 'This site (apps/drive-web), the CARLA drive server (apps/drive-server), the camera relay and 72 h recorder (scripts/ops/camera-relay), the path2v2x.net nginx vhost (scripts/ops/nginx), CARLA and drive systemd units.',
+			deploy: 'scripts/deploy.sh [--server]'
+		},
+		{
+			repo: 'path2v2x/v2x-digital-twin',
+			url: 'https://github.com/path2v2x/v2x-digital-twin',
+			owns: 'The twin server (apps/twin-server: SimForge world, ghosts from detections, 72 h detection history and replay), the twin.path2v2x.net vhost (deploy/nginx-twin.conf), the calibrated camera rig (config/drive-rigs), the perception service unit and config (scripts/systemd, config/perception), the Studio unit and env template (deploy/).',
+			deploy: 'scripts/deploy.sh [--perception] [--studio]'
+		},
+		{
+			repo: 'path2v2x/co-perception',
+			url: 'https://github.com/path2v2x/co-perception',
+			owns: 'The perception code itself: NVDEC ingest from the demux sockets, YOLOv8 + BoT-SORT, ground-plane projection to GPS, the /detections/latest endpoint. Deployed as a checkout that v2x-digital-twin points its service unit at. The camera demux pipeline on the RFS PC is run separately by its author.',
+			deploy: 'v2x-digital-twin: scripts/deploy.sh --perception'
+		},
+		{
+			repo: 'SimForgeinc/simforge-oss',
+			url: 'https://github.com/SimForgeinc/simforge-oss',
+			owns: 'The open-source simulation engine and Studio UI. The twin consumes its packages one-way (vendored into v2x-digital-twin) and runs its Studio Drive dashboard as the twin UI. Nothing project-specific lives here; behaviour is configured through environment variables and the twin protocol.',
+			deploy: 'v2x-digital-twin: scripts/deploy.sh --studio'
+		}
+	];
+
+	interface RouteRow {
+		route: string;
+		backend: string;
+		repo: string;
+	}
+
+	const driveRoutes: RouteRow[] = [
+		{ route: '/  /drive  /live  /timeline  /demo-videos  /architecture', backend: 'Static build in /var/www/v2x-drive (apps/drive-web); config.json ships with the build and is root-relative', repo: 'v2x-drive' },
+		{ route: '/ws', backend: 'drive-server WebSocket, 127.0.0.1:8765 (CARLA drive sessions)', repo: 'v2x-drive' },
+		{ route: '/data/api/state.json  /data/api/map-data.json  /data/snapshots/', backend: 'Files the drive server writes to /var/www/v2x-drive-data every few seconds', repo: 'v2x-drive' },
+		{ route: '/data/demo-videos/', backend: 'Same directory, nginx JSON autoindex', repo: 'v2x-drive' },
+		{ route: '/camera/chN/index.m3u8', backend: 'MediaMTX low-latency HLS, 127.0.0.1:8888', repo: 'v2x-drive' },
+		{ route: '/archive/list  /archive/get', backend: 'MediaMTX playback server over the 72 h recordings, 127.0.0.1:9996', repo: 'v2x-drive' },
+		{ route: '/detections/coverage  /objects  /history', backend: 'twin-server detection history, 127.0.0.1:8190 (the Timeline reads the twin\u2019s 72 h store)', repo: 'v2x-digital-twin' },
+		{ route: '/perception  /perception/ws', backend: 'co-perception live viewer, 127.0.0.1:8766', repo: 'co-perception' }
+	];
+
+	const twinRoutes: RouteRow[] = [
+		{ route: '/  (302)  /dashboard/drive  /_next/  /api/', backend: 'Studio Drive (next start), 127.0.0.1:5199', repo: 'simforge-oss' },
+		{ route: '/twin  /drive  /camera-feeds', backend: 'twin-server WebSockets, 127.0.0.1:8865 (truth frames, drive commands, multiplexed camera JPEGs)', repo: 'v2x-digital-twin' },
+		{ route: '/health  /streams/chN.mjpg  /detections/', backend: 'twin-server HTTP, 127.0.0.1:8190', repo: 'v2x-digital-twin' },
+		{ route: '/drive-rigs/richmond.json', backend: 'Calibrated pole-camera rig served from config/drive-rigs (overrides the Studio fixture)', repo: 'v2x-digital-twin' },
+		{ route: '/map/  /map-bundles/', backend: 'Richmond Field Station 3D bundle in /var/www/v2x-twin-map', repo: 'v2x-digital-twin' },
+		{ route: '/camera/  /archive/', backend: 'Same MediaMTX relay as above (twin replay video)', repo: 'v2x-drive' }
 	];
 </script>
 
@@ -149,6 +247,137 @@
 							{/each}
 						</tbody>
 					</table>
+				</div>
+			</section>
+
+			<!-- System diagram -->
+			<section class="space-y-3">
+				<h2 class="text-lg font-semibold text-white">How the pieces fit</h2>
+				<p class="max-w-3xl text-sm text-gray-400">
+					Boxes are processes on the RFS PC grouped by the repository that owns them. Only nginx listens on the
+					internet; every arrow into the RFS PC is a path on one of the two hostnames, and every arrow inside it is a
+					loopback port or a Unix socket.
+				</p>
+				<MermaidDiagram title="Repositories, processes, and routes" source={systemDiagram} />
+			</section>
+
+			<!-- Repositories -->
+			<section class="space-y-3">
+				<h2 class="text-lg font-semibold text-white">Repositories: what lives where</h2>
+				<div class="overflow-x-auto rounded-3xl border border-gray-800 bg-gray-900/70">
+					<table class="w-full text-left text-sm">
+						<thead class="border-b border-gray-800 text-[11px] uppercase tracking-[0.16em] text-gray-500">
+							<tr>
+								<th class="px-4 py-3">Repository</th>
+								<th class="px-4 py-3">Owns</th>
+								<th class="px-4 py-3">Deploy</th>
+							</tr>
+						</thead>
+						<tbody class="divide-y divide-gray-800/80 text-gray-300">
+							{#each repos as row}
+								<tr>
+									<td class="px-4 py-2.5 align-top whitespace-nowrap">
+										<a class="text-cyan-300 hover:underline" href={row.url} target="_blank" rel="noreferrer">{row.repo}</a>
+									</td>
+									<td class="px-4 py-2.5 align-top">{row.owns}</td>
+									<td class="px-4 py-2.5 align-top font-mono text-xs whitespace-nowrap text-cyan-200/80">{row.deploy}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+				<p class="text-xs text-gray-500">
+					Rule of thumb: <span class="text-gray-300">v2x-drive</span> owns everything under path2v2x.net plus the shared camera relay;
+					<span class="text-gray-300">v2x-digital-twin</span> owns everything under twin.path2v2x.net plus the detection history;
+					<span class="text-gray-300">co-perception</span> is the only perception implementation; <span class="text-gray-300">simforge-oss</span> only supplies the twin engine and UI.
+					The two cross-repo routes are <span class="font-mono text-cyan-200/80">/detections/</span> on the drive host and
+					<span class="font-mono text-cyan-200/80">/camera/ /archive/</span> on the twin host; both are read-only proxies to loopback ports.
+				</p>
+			</section>
+
+			<!-- Routes -->
+			<section class="grid gap-6 lg:grid-cols-2">
+				{#each [{ host: 'path2v2x.net', note: 'www redirects here; drive.path2v2x.net is an alias. Vhost: v2x-drive/scripts/ops/nginx/v2x-drive-public.conf', rows: driveRoutes }, { host: 'twin.path2v2x.net', note: 'Vhost: v2x-digital-twin/deploy/nginx-twin.conf', rows: twinRoutes }] as table}
+					<div class="space-y-3">
+						<div>
+							<h2 class="text-lg font-semibold text-white">Routes on {table.host}</h2>
+							<p class="text-xs text-gray-500">{table.note}</p>
+						</div>
+						<div class="overflow-x-auto rounded-3xl border border-gray-800 bg-gray-900/70">
+							<table class="w-full text-left text-sm">
+								<thead class="border-b border-gray-800 text-[11px] uppercase tracking-[0.16em] text-gray-500">
+									<tr>
+										<th class="px-4 py-3">Route</th>
+										<th class="px-4 py-3">Backend</th>
+										<th class="px-4 py-3">Repo</th>
+									</tr>
+								</thead>
+								<tbody class="divide-y divide-gray-800/80 text-gray-300">
+									{#each table.rows as row}
+										<tr>
+											<td class="px-4 py-2.5 align-top font-mono text-xs text-cyan-200/80">{row.route}</td>
+											<td class="px-4 py-2.5 align-top">{row.backend}</td>
+											<td class="px-4 py-2.5 align-top whitespace-nowrap text-white">{row.repo}</td>
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						</div>
+					</div>
+				{/each}
+			</section>
+
+			<!-- Developer guide -->
+			<section class="space-y-4 rounded-3xl border border-gray-800 bg-gray-900/70 p-5">
+				<h2 class="text-lg font-semibold text-white">Developer guide</h2>
+				<div class="grid gap-6 lg:grid-cols-2">
+					<div class="space-y-3 text-sm text-gray-300">
+						<h3 class="text-sm font-semibold text-white">Run this site locally</h3>
+						<pre class="overflow-x-auto rounded-2xl border border-gray-800 bg-gray-950 px-4 py-3 font-mono text-xs text-cyan-100">git clone https://github.com/path2v2x/v2x-drive
+cd v2x-drive/apps/drive-web
+npm ci && npm run dev        # http://localhost:5173</pre>
+						<p class="text-gray-400">
+							The dev server proxies <span class="font-mono text-cyan-200/80">/ws /camera /archive /detections /data</span> to the
+							production host, so <span class="font-mono text-cyan-200/80">static/config.json</span> stays root-relative everywhere.
+							Set <span class="font-mono text-cyan-200/80">DRIVE_PROXY_TARGET</span> to point at another nginx.
+						</p>
+						<h3 class="pt-2 text-sm font-semibold text-white">Run the twin locally</h3>
+						<pre class="overflow-x-auto rounded-2xl border border-gray-800 bg-gray-950 px-4 py-3 font-mono text-xs text-cyan-100">git clone https://github.com/path2v2x/v2x-digital-twin
+cd v2x-digital-twin && pnpm install
+pnpm --dir apps/twin-server start   # WS :8765, HTTP :8090
+pnpm --dir apps/twin-server test</pre>
+						<p class="text-gray-400">
+							The Studio UI comes from a simforge-oss checkout: <span class="font-mono text-cyan-200/80">pnpm dev</span> there and
+							set <span class="font-mono text-cyan-200/80">NEXT_PUBLIC_DRIVE_TWIN_URL</span> to your twin server.
+						</p>
+					</div>
+					<div class="space-y-3 text-sm text-gray-300">
+						<h3 class="text-sm font-semibold text-white">Deploy</h3>
+						<pre class="overflow-x-auto rounded-2xl border border-gray-800 bg-gray-950 px-4 py-3 font-mono text-xs text-cyan-100"># push main first; each script fast-forwards the RFS PC checkout
+v2x-drive/scripts/deploy.sh             # site + nginx
+v2x-drive/scripts/deploy.sh --server    # + drive server (refuses mid-session)
+v2x-digital-twin/scripts/deploy.sh      # twin server + units + nginx
+v2x-digital-twin/scripts/deploy.sh --perception --studio</pre>
+						<p class="text-gray-400">
+							Scripts need Tailscale SSH to the RFS PC as root. They install the tracked units and nginx vhosts, restart the
+							service, and fail on a bad health check. Rollback is a revert plus the same command.
+						</p>
+						<h3 class="pt-2 text-sm font-semibold text-white">Adding something</h3>
+						<ul class="list-disc space-y-1.5 pl-5 text-gray-400">
+							<li>A new page on this site: add a route under <span class="font-mono text-cyan-200/80">apps/drive-web/src/routes</span>; no server change.</li>
+							<li>A new backend on path2v2x.net: bind it to loopback, add a <span class="font-mono text-cyan-200/80">location</span> to the tracked vhost, add a key to <span class="font-mono text-cyan-200/80">runtime-config.ts</span>, deploy.</li>
+							<li>Something the twin needs: it belongs in v2x-digital-twin (server) or, if generic, as a PR to simforge-oss driven by env or the twin protocol.</li>
+							<li>Perception changes go to co-perception; the service unit and pipeline config that run it live in v2x-digital-twin.</li>
+							<li>Never edit files on the RFS PC by hand; everything under /etc and /var/www that matters is installed by a deploy script from a tracked file.</li>
+						</ul>
+						<h3 class="pt-2 text-sm font-semibold text-white">Where state lives</h3>
+						<ul class="list-disc space-y-1.5 pl-5 text-gray-400">
+							<li><span class="font-mono text-cyan-200/80">/mnt/archive/v2x-camera/recordings</span>: 72 h of video, guard timer keeps 60 GB free.</li>
+							<li><span class="font-mono text-cyan-200/80">/var/lib/v2x-twin/detections.sqlite</span>: 72 h of detections.</li>
+							<li><span class="font-mono text-cyan-200/80">/var/www/v2x-drive-data</span>: drive-server publications and demo videos.</li>
+							<li>Nothing in the cloud except the Route 53 zone.</li>
+						</ul>
+					</div>
 				</div>
 			</section>
 
