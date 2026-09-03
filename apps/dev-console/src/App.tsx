@@ -474,7 +474,7 @@ export default function App() {
 
   useEffect(() => {
     const local = /^(localhost|127\.|10\.|192\.168\.|100\.|path-b860i)/.test(location.hostname)
-    setUrl(local ? `ws://${location.hostname}:8765/` : 'wss://engine-palm-naples-fri.trycloudflare.com/')
+    setUrl(local ? `ws://${location.hostname}:8765/` : 'wss://path2v2x.net/ws')
     try { setSaved(JSON.parse(localStorage.getItem(LS_KEY) || '[]')) } catch { /* ignore */ }
   }, [])
 

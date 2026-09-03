@@ -47,7 +47,7 @@ flowchart TB
             CarlaWorld["Active CARLA world\nRichmond_Field_Station_Richmond_CA"]
         end
 
-        Cloudflared["cloudflared\nfor Drive WS access only"]
+        Nginx["nginx :443\nwss://path2v2x.net/ws"]
     end
 
     subgraph HILDev["Coworker Development Environment"]
@@ -71,7 +71,7 @@ flowchart TB
 
     CarlaDocker --> CarlaRPC
     CarlaRPC --> CarlaWorld
-    Cloudflared --> DriveServer
+    Nginx --> DriveServer
 
     WindowsApp --> HILCore
     HILConfig --> HILCore

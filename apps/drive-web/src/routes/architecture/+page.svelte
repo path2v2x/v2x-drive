@@ -23,26 +23,24 @@
 			]
 		},
 		{
-			name: 'AWS (us-west-1 / us-west-2)',
-			where: 'PATH AWS account',
-			accent: 'border-amber-400/40 bg-amber-400/5',
-			nodes: [
-				{ title: 'Amplify hosting', detail: 'Builds and serves this static site from the v2x-drive repository', mono: 'path2v2x.net' },
-				{ title: 'HTTP API + DynamoDB', detail: 'Detection records, drive-server heartbeat (/state), map data, demo videos', mono: '/detections /state /map-data' },
-				{ title: 'Route 53', detail: 'DNS for path2v2x.net, drive.path2v2x.net, twin.path2v2x.net' }
-			]
-		},
-		{
 			name: 'RFS PC (path-rfs)',
 			where: 'Richmond Field Station, UC Berkeley campus network',
 			accent: 'border-emerald-400/40 bg-emerald-400/5',
 			nodes: [
+				{ title: 'nginx + Let\u2019s Encrypt', detail: 'Serves this site and fronts every service below on one origin', mono: 'https://path2v2x.net · https://twin.path2v2x.net' },
 				{ title: 'CARLA 0.10 (Unreal 5)', detail: 'Richmond Field Station map, Docker container, RTX 5080', mono: 'RPC :2000-2002' },
-				{ title: 'Drive server', detail: 'Owns the CARLA tick (20 Hz sync mode), ego vehicle, cameras, scenarios; talks to the browser over WebSocket', mono: 'wss://drive.path2v2x.net/ws' },
-				{ title: 'Twin server', detail: 'SimForge OSS engine mirroring live detections; no CARLA involved', mono: 'wss://twin.path2v2x.net/twin' },
-				{ title: 'Perception (co-perception)', detail: 'YOLOv8 on the four pole cameras, GPS projection of every detection', mono: '/perception/ws' },
-				{ title: 'Camera relay (MediaMTX)', detail: 'H.264 pass-through; local low-latency HLS and 72-hour (3-day) recording playback from the archive NVMe for browsers, RTSP for the twin', mono: '/camera/chN/index.m3u8 · /archive/' },
-				{ title: 'nginx + Let\u2019s Encrypt', detail: 'TLS termination for drive.path2v2x.net and twin.path2v2x.net', mono: ':443' }
+				{ title: 'Drive server', detail: 'Owns the CARLA tick (20 Hz sync mode), ego vehicle, cameras, scenarios; publishes state.json and map data', mono: '/ws · /data/' },
+				{ title: 'Twin server', detail: 'SimForge OSS engine mirroring live detections; keeps 72 h of detection history in SQLite for replay and the Timeline', mono: '/twin · /detections/' },
+				{ title: 'Perception (co-perception)', detail: 'YOLOv8 on the four pole cameras, GPS projection of every detection', mono: '127.0.0.1:8091' },
+				{ title: 'Camera relay (MediaMTX)', detail: 'H.264 pass-through; local low-latency HLS and 72-hour (3-day) recording playback from the archive NVMe for browsers, RTSP for the twin', mono: '/camera/chN/index.m3u8 · /archive/' }
+			]
+		},
+		{
+			name: 'AWS',
+			where: 'PATH AWS account',
+			accent: 'border-amber-400/40 bg-amber-400/5',
+			nodes: [
+				{ title: 'Route 53', detail: 'DNS only: path2v2x.net, www, drive and twin all point at the RFS PC' }
 			]
 		},
 		{
@@ -54,13 +52,14 @@
 	];
 
 	const flows = [
-		{ from: 'Browser', to: 'Amplify (AWS)', what: 'Static site: HTML/JS/config.json', how: 'HTTPS' },
-		{ from: 'Browser', to: 'Drive server (RFS PC)', what: 'Drive session: controls, HUD, CARLA camera frames, twin view', how: 'wss://drive.path2v2x.net/ws' },
+		{ from: 'Browser', to: 'nginx (RFS PC)', what: 'Static site: HTML/JS/config.json', how: 'https://path2v2x.net' },
+		{ from: 'Browser', to: 'Drive server (RFS PC)', what: 'Drive session: controls, HUD, CARLA camera frames', how: 'wss://path2v2x.net/ws' },
 		{ from: 'Browser', to: 'Camera relay (RFS PC)', what: 'Live and archived camera video', how: '/camera/chN/index.m3u8 (HLS) · /archive/get (MP4)' },
-		{ from: 'Browser', to: 'HTTP API (AWS)', what: 'Detections, heartbeat, map data, demo videos', how: 'HTTPS JSON' },
-		{ from: 'Browser', to: 'Twin server (RFS PC)', what: 'Digital twin truth frames, camera feeds', how: 'wss://twin.path2v2x.net/twin' },
+		{ from: 'Browser', to: 'Twin server (RFS PC)', what: 'Detection history for the Timeline (72 h)', how: '/detections/coverage · /objects · /history' },
+		{ from: 'Browser', to: 'Drive server (RFS PC)', what: 'Heartbeat, map data, demo videos', how: '/data/api/state.json · /data/api/map-data.json · /data/demo-videos/' },
+		{ from: 'Browser', to: 'Twin server (RFS PC)', what: 'Digital twin truth frames, camera feeds, replay clock', how: 'wss://twin.path2v2x.net/twin' },
 		{ from: 'Cameras', to: 'RFS PC', what: 'Raw H.264 (one session per camera), fanned out on the host to perception, relay and recording', how: 'RTSP over TCP' },
-		{ from: 'Perception (RFS PC)', to: 'HTTP API (AWS)', what: 'Detection records with GPS position', how: 'HTTPS POST' },
+		{ from: 'Perception (RFS PC)', to: 'Twin server (RFS PC)', what: 'Per-camera detections with GPS position, recorded for 72 h', how: 'http://127.0.0.1:8091/detections/latest' },
 		{ from: 'Drive server (RFS PC)', to: 'CARLA (RFS PC)', what: 'World tick, ego control, sensors', how: 'CARLA RPC, localhost:2000' },
 		{ from: 'SUMO / VOICES / HIL tools', to: 'CARLA (RFS PC)', what: 'Sidecar clients sharing the same world', how: 'CARLA RPC :2000 (see below)' }
 	];
@@ -93,8 +92,9 @@
 				<p class="text-xs font-medium uppercase tracking-[0.3em] text-cyan-300/80">System overview</p>
 				<h1 class="text-3xl font-semibold text-white">Architecture</h1>
 				<p class="max-w-3xl text-sm text-gray-400">
-					This website is hosted on AWS. Everything that simulates, perceives or streams runs on one workstation at
-					Richmond Field Station (the RFS PC). The browser talks to both directly.
+					Everything runs on one workstation at Richmond Field Station (the RFS PC): this website, the CARLA drive
+					server, the digital twin, perception, and the camera relay. The browser talks to that one host; AWS only
+					holds DNS.
 				</p>
 			</div>
 
@@ -120,8 +120,8 @@
 					{/each}
 				</div>
 				<p class="text-xs text-gray-500">
-					Browser &rarr; AWS for the site and data API; Browser &rarr; RFS PC for drive sessions, the twin, and both live and 72-hour (3-day) archived camera video;
-					Cameras &rarr; RFS PC for video; RFS PC &rarr; AWS for detection records.
+					Browser &rarr; RFS PC for everything: this site, drive sessions, the twin, detection history, and both live and 72-hour (3-day) archived camera video;
+					Cameras &rarr; RFS PC for video. The only cloud dependency left is DNS.
 				</p>
 			</section>
 
