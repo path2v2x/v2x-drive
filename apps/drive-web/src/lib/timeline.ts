@@ -1,66 +1,26 @@
-import type { DetectionItem, TimelineEvent, TimelineHistogramBucket } from './types';
+import type { CoverageBucket, DetectionObject } from './types';
 
-/** Length of one archive playback window requested from the read API. */
+/** Length of one archive playback window requested from MediaMTX. */
 export const PLAYBACK_WINDOW_MS = 15 * 60 * 1000;
 
-/** How far from the window edge the pre-fetch of the next window starts. */
-export const WINDOW_EDGE_MARGIN_MS = 60 * 1000;
-
-export const TIMELINE_SPAN_MS = 24 * 60 * 60 * 1000;
+/** The twin server keeps 72 h of detections; MediaMTX keeps 72 h of video. */
+export const TIMELINE_SPAN_MS = 72 * 60 * 60 * 1000;
 
 /** Maximum tolerated wall-clock skew between an archive pane and replay. */
 export const ARCHIVE_MAX_CURSOR_DRIFT_MS = 250;
 
-const TRUSTED_MEDIA_CLOCK_SOURCE = 'hls_ext_x_program_date_time';
-const MEDIA_CLOCK_CONSISTENCY_TOLERANCE_MS = 5;
+/** Coverage buckets are requested per view so the histogram stays legible when zoomed. */
+export const MAX_COVERAGE_BUCKETS = 720;
+export const MIN_COVERAGE_BUCKET_SECONDS = 10;
 
-function parseTimezoneTimestamp(value: unknown): number | null {
-	if (typeof value !== 'string') return null;
-	const text = value.trim();
-	if (!text || !/(?:Z|[+-]\d{2}:\d{2})$/i.test(text)) return null;
-	const parsed = Date.parse(text);
-	return Number.isFinite(parsed) ? parsed : null;
+export function coverageBucketSecondsForSpan(spanMs: number): number {
+	const raw = Math.ceil(spanMs / 1000 / MAX_COVERAGE_BUCKETS);
+	return Math.max(MIN_COVERAGE_BUCKET_SECONDS, Math.ceil(raw / 10) * 10);
 }
 
-/** Fail-closed schema-v2 predicate for user-visible HLS media-time trust. */
-export function hasTrustedMediaTime(item: DetectionItem): boolean {
-	if (item.media_time_trusted !== true || item.timestamp_schema_version !== 2) return false;
-	if (
-		typeof item.timestamp_utc !== 'string' ||
-		typeof item.media_timestamp_utc !== 'string' ||
-		!item.timestamp_utc.trim() ||
-		item.timestamp_utc.trim() !== item.media_timestamp_utc.trim()
-	) {
-		return false;
-	}
-
-	const mediaTimestampMs = parseTimezoneTimestamp(item.media_timestamp_utc);
-	const clock = item.media_clock;
-	if (
-		mediaTimestampMs === null ||
-		clock?.source !== TRUSTED_MEDIA_CLOCK_SOURCE ||
-		clock.schema_version !== 1 ||
-		typeof clock.position_milliseconds !== 'number' ||
-		!Number.isFinite(clock.position_milliseconds) ||
-		clock.position_milliseconds < 0
-	) {
-		return false;
-	}
-	const anchorMs = parseTimezoneTimestamp(clock.anchor_program_date_time_utc);
-	return (
-		anchorMs !== null &&
-		Math.abs(anchorMs + clock.position_milliseconds - mediaTimestampMs) <=
-			MEDIA_CLOCK_CONSISTENCY_TOLERANCE_MS
-	);
-}
-
-export function archiveMediaTimeForEpoch(
-	epochMs: number,
-	pdtOffsetMs: number | null,
-	windowStartMs: number
-): number {
-	const base = pdtOffsetMs ?? windowStartMs;
-	return Math.max(0, (epochMs - base) / 1000);
+/** Media time inside a clip for a wall-clock instant; clamps to the clip start. */
+export function archiveMediaTimeForEpoch(epochMs: number, clipStartMs: number): number {
+	return Math.max(0, (epochMs - clipStartMs) / 1000);
 }
 
 /** Map native archive MP4 media time to the recording's wall clock. */
@@ -126,13 +86,13 @@ export function windowForCursor(cursorMs: number, nowMs: number): PlaybackWindow
 }
 
 export interface MarkerLayout {
-	event: TimelineEvent;
+	event: DetectionObject;
 	x: number; // 0..1 fraction across the visible span
 	color: string;
 }
 
 export function layoutMarkers(
-	events: TimelineEvent[],
+	events: DetectionObject[],
 	viewStartMs: number,
 	viewEndMs: number
 ): MarkerLayout[] {
@@ -145,7 +105,7 @@ export function layoutMarkers(
 		markers.push({
 			event,
 			x: (t - viewStartMs) / span,
-			color: event.media_time_trusted === true ? objectTypeColor(event.object_type) : '#64748b'
+			color: objectTypeColor(event.object_type)
 		});
 	}
 	return markers;
@@ -160,7 +120,7 @@ export interface HistogramBarLayout {
 }
 
 export function layoutHistogram(
-	buckets: TimelineHistogramBucket[],
+	buckets: CoverageBucket[],
 	bucketSeconds: number,
 	viewStartMs: number,
 	viewEndMs: number
@@ -171,9 +131,9 @@ export function layoutHistogram(
 	const visible: { x: number; width: number; total: number }[] = [];
 	let max = 0;
 	for (const bucket of buckets) {
-		const s = parseIsoMs(bucket.bucket_start);
+		const s = parseIsoMs(bucket.start);
 		if (s === null || s + bucketMs < viewStartMs || s > viewEndMs) continue;
-		const total = Object.values(bucket.counts).reduce((sum, n) => sum + n, 0);
+		const total = bucket.detections;
 		if (total > max) max = total;
 		visible.push({
 			x: (Math.max(s, viewStartMs) - viewStartMs) / span,

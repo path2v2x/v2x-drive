@@ -1,6 +1,7 @@
 <script lang="ts">
-	import type { TimelineEvent, TimelineHistogramBucket } from '$lib/types';
+	import type { CoverageBucket, DetectionObject } from '$lib/types';
 	import {
+		TIMELINE_SPAN_MS,
 		formatClock,
 		layoutHistogram,
 		layoutMarkers,
@@ -13,12 +14,12 @@
 		viewEndMs: number;
 		cursorMs: number;
 		liveEdgeMs: number;
-		events: TimelineEvent[];
-		histogram: TimelineHistogramBucket[];
+		events: DetectionObject[];
+		histogram: CoverageBucket[];
 		bucketSeconds: number;
 		selectedObjectId: string | null;
 		onScrub: (epochMs: number) => void;
-		onSelectEvent: (event: TimelineEvent) => void;
+		onSelectEvent: (event: DetectionObject) => void;
 		onViewChange: (viewStartMs: number, viewEndMs: number) => void;
 	}
 
@@ -38,10 +39,10 @@
 
 	let trackEl = $state<HTMLDivElement | null>(null);
 	let scrubbing = $state(false);
-	let hovered = $state<{ event: TimelineEvent; clientX: number } | null>(null);
+	let hovered = $state<{ event: DetectionObject; clientX: number } | null>(null);
 
 	const MIN_SPAN_MS = 2 * 60 * 1000;
-	const MAX_SPAN_MS = 24 * 60 * 60 * 1000;
+	const MAX_SPAN_MS = TIMELINE_SPAN_MS;
 
 	let markers = $derived(layoutMarkers(events, viewStartMs, viewEndMs));
 	let histogramBars = $derived(
@@ -98,6 +99,7 @@
 	}
 
 	const spanPresets = [
+		{ label: '72h', ms: 72 * 60 * 60 * 1000 },
 		{ label: '24h', ms: 24 * 60 * 60 * 1000 },
 		{ label: '6h', ms: 6 * 60 * 60 * 1000 },
 		{ label: '1h', ms: 60 * 60 * 1000 },
@@ -204,12 +206,9 @@
 		<div class="flex items-center gap-3 font-mono text-[11px] text-gray-300">
 			<span class="h-2 w-2 rounded-full" style={`background:${objectTypeColor(hovered.event.object_type)}`}></span>
 			<span>{hovered.event.object_id}</span>
-			<span class="text-gray-500">{hovered.event.device_id}</span>
+			<span class="text-gray-500">{hovered.event.cameras.join(', ')}</span>
 			<span>{formatClock(Date.parse(hovered.event.first_seen))}</span>
 			<span class="text-gray-500">conf {hovered.event.max_confidence.toFixed(2)}</span>
-			{#if hovered.event.media_time_trusted !== true}
-				<span class="text-rose-300">untrusted pre-fix media time</span>
-			{/if}
 			<span class="text-gray-500">{hovered.event.count} detections</span>
 		</div>
 	{:else}

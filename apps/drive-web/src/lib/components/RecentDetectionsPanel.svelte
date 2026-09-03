@@ -1,13 +1,15 @@
 <script lang="ts">
-	import { fetchDetectionsPage, fetchDetectionsRange } from '$lib/api';
-	import type { DetectionItem } from '$lib/types';
-	import { hasTrustedMediaTime } from '$lib/timeline';
+	import { fetchDetectionHistory } from '$lib/api';
+	import type { DetectionRecord } from '$lib/types';
+	import { toIsoMillis } from '$lib/timeline';
 	import {
 		isProducerTimestampFresh,
 		latestProducerTimestamp
 	} from '$lib/producer-time';
 
 	const RECENT_DETECTIONS_STALE_AFTER_MS = 30_000;
+	/** Live mode shows everything recorded in the last minute. */
+	const LIVE_WINDOW_MS = 60_000;
 
 	interface Props {
 		limit?: number;
@@ -19,7 +21,7 @@
 
 	let { limit = 25, refreshMs = 5000, range = null, highlightObjectId = null }: Props = $props();
 
-	let items = $state<DetectionItem[]>([]);
+	let items = $state<DetectionRecord[]>([]);
 	let isLoading = $state(false);
 	let error = $state<string | null>(null);
 	let latestProducerAt = $state<string | null>(null);
@@ -32,25 +34,24 @@
 		| { mode: 'range'; start: string; end: string; limit: number }
 		| { mode: 'recent'; limit: number };
 
-	function displayValue(value: unknown): string {
-		return value == null ? '' : String(value);
+	function displayTime(value: string): string {
+		const ms = Date.parse(value);
+		return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString([], { hour12: false }) : value;
 	}
 
-	function displayConfidence(value: DetectionItem['confidence_score']): string {
-		if (typeof value === 'number') return value.toFixed(2);
-		return displayValue(value);
-	}
-
-	function displayLatency(value: DetectionItem['decode_latency_ms']): string | null {
-		if (value == null || value === '') return null;
-		const parsed = typeof value === 'number' ? value : Number(value);
-		return Number.isFinite(parsed) ? `${Math.round(parsed)} ms` : null;
+	function displayPosition(item: DetectionRecord): string {
+		return `${item.lat.toFixed(6)}, ${item.lon.toFixed(6)}`;
 	}
 
 	function currentQuery(): DetectionQuery {
 		return range
 			? { mode: 'range', start: range.start, end: range.end, limit }
 			: { mode: 'recent', limit };
+	}
+
+	/** Newest-first rows for the table; the API returns ascending order. */
+	function newestFirst(records: DetectionRecord[]): DetectionRecord[] {
+		return [...records].sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
 	}
 
 	function invalidateRequests() {
@@ -70,19 +71,19 @@
 		isLoading = showLoading;
 
 		try {
-			const response = query.mode === 'range'
-				? await fetchDetectionsRange({
-						start: query.start,
-						end: query.end,
-						limit: query.limit
-					})
-				: await fetchDetectionsPage({ mode: 'recent', limit: query.limit });
+			const window =
+				query.mode === 'range'
+					? { start: query.start, end: query.end }
+					: { start: toIsoMillis(Date.now() - LIVE_WINDOW_MS), end: toIsoMillis(Date.now() + 5_000) };
+			const response = await fetchDetectionHistory({
+				start: window.start,
+				end: window.end,
+				limit: query.mode === 'recent' ? 5000 : query.limit
+			});
 			if (generation !== queryGeneration || requestId !== latestRequestId) return;
 			evaluatedAtMs = Date.now();
-			items = response.items || [];
-			latestProducerAt = latestProducerTimestamp(
-				items.map((item) => item.timestamp_utc)
-			);
+			items = newestFirst(response.items).slice(0, query.limit);
+			latestProducerAt = latestProducerTimestamp(items.map((item) => item.ts));
 		} catch (err) {
 			if (generation !== queryGeneration || requestId !== latestRequestId) return;
 			error = err instanceof Error ? err.message : 'Failed to fetch detections.';
@@ -191,8 +192,8 @@
 						<th class="px-4 py-3 font-medium">Object</th>
 						<th class="px-4 py-3 font-medium">Type</th>
 						<th class="px-4 py-3 font-medium">Confidence</th>
-						<th class="px-4 py-3 font-medium">Device</th>
-						<th class="px-4 py-3 font-medium">Media clock</th>
+						<th class="px-4 py-3 font-medium">Camera</th>
+						<th class="px-4 py-3 font-medium">Position</th>
 					</tr>
 				</thead>
 				<tbody class="font-mono text-xs text-gray-200">
@@ -209,7 +210,7 @@
 							</td>
 						</tr>
 					{:else}
-						{#each items as item}
+						{#each items as item (`${item.ts}|${item.camera}|${item.object_id}`)}
 							<tr
 								class={`border-b border-gray-900/80 transition hover:bg-white/[0.03] ${
 									highlightObjectId != null && item.object_id === highlightObjectId
@@ -217,21 +218,12 @@
 										: ''
 								}`}
 							>
-								<td class="px-4 py-3 align-top">{displayValue(item.timestamp_utc)}</td>
-								<td class="px-4 py-3 align-top">{displayValue(item.object_id)}</td>
-								<td class="px-4 py-3 align-top">{displayValue(item.object_type)}</td>
-								<td class="px-4 py-3 align-top">{displayConfidence(item.confidence_score)}</td>
-								<td class="px-4 py-3 align-top">{displayValue(item.device_id)}</td>
-								<td class="px-4 py-3 align-top">
-									{#if hasTrustedMediaTime(item)}
-										<span class="text-emerald-300">Trusted HLS</span>
-										{#if displayLatency(item.decode_latency_ms)}
-											<span class="mt-1 block text-gray-500">{displayLatency(item.decode_latency_ms)}</span>
-										{/if}
-									{:else}
-										<span class="text-gray-500">Legacy / untrusted</span>
-									{/if}
-								</td>
+								<td class="px-4 py-3 align-top" title={item.ts}>{displayTime(item.ts)}</td>
+								<td class="px-4 py-3 align-top">{item.object_id}</td>
+								<td class="px-4 py-3 align-top">{item.object_type}</td>
+								<td class="px-4 py-3 align-top">{item.confidence.toFixed(2)}</td>
+								<td class="px-4 py-3 align-top">{item.camera}</td>
+								<td class="px-4 py-3 align-top text-gray-400">{displayPosition(item)}</td>
 							</tr>
 						{/each}
 					{/if}

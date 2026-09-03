@@ -1,7 +1,7 @@
 """Helpers for consuming paginated detection-range API responses.
 
-The read API caps each DynamoDB query page and returns an opaque ``next``
-token.  Bridge consumers must either follow that token or fail explicitly;
+The history API caps each page and returns ``next``, the ISO timestamp of
+the first unreturned item.  Bridge consumers must either follow that token or fail explicitly;
 silently treating the first page as the whole time range reconstructs an
 incomplete scene and creates gaps during twin replay.
 """

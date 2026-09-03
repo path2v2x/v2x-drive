@@ -1,120 +1,49 @@
-interface DetectionRoutes {
-	recent: string;
-	byObject: string;
-	byGeohash: string;
-}
-
+/**
+ * Runtime configuration loaded from `/config.json` next to the built site.
+ *
+ * Every URL may be relative: the site is served from the same nginx host as
+ * the drive server, MediaMTX and the twin server, so production config uses
+ * root-relative paths and the browser origin supplies the host.
+ */
 export interface RuntimeConfig {
-	apiBaseUrl: string;
-	detectionsApiBaseUrl: string;
-	detectionRoutes: DetectionRoutes;
-	stateBaseUrl: string;
-	statePath: string;
-	mapDataPath: string;
-	demoVideosPath: string;
+	/** Drive server WebSocket; relative paths resolve against the page origin. */
+	wsUrl: string;
+	/** Static data published by the drive server (`api/state.json`, `api/map-data.json`, demo videos). */
+	dataBaseUrl: string;
+	/** Twin server detection history (`/coverage`, `/history`, `/objects`). */
+	detectionsBaseUrl: string;
 	videoCameraIds: string[];
+	/** Live camera HLS playlist per camera; `{camera_id}` placeholder. Empty disables live video. */
 	liveVideoUrlTemplate: string;
+	/** MediaMTX playback server base; empty disables archive playback. */
 	archiveVideoBaseUrl: string;
-	perceptionStreamUrls: Record<string, string>;
-	perceptionStreamBaseUrl: string;
-	perceptionStreamPathTemplate: string;
-	cloudflareDriveWsUrl: string;
-	tailscaleDriveWsUrl: string;
 }
 
 const DEFAULT_CONFIG: RuntimeConfig = {
-	apiBaseUrl: 'https://w0j9m7dgpg.execute-api.us-west-1.amazonaws.com',
-	detectionsApiBaseUrl: 'https://w0j9m7dgpg.execute-api.us-west-1.amazonaws.com',
-	detectionRoutes: {
-		recent: '/detections/recent',
-		byObject: '/detections/object/{object_id}',
-		byGeohash: '/detections/geohash/{geohash}'
-	},
-	stateBaseUrl: 'https://w0j9m7dgpg.execute-api.us-west-1.amazonaws.com',
-	statePath: '/state',
-	mapDataPath: '/map-data',
-	demoVideosPath: '/demo-videos',
+	wsUrl: '/ws',
+	dataBaseUrl: '/data',
+	detectionsBaseUrl: '/detections',
 	videoCameraIds: ['ch1', 'ch2', 'ch3', 'ch4'],
 	liveVideoUrlTemplate: '',
-	archiveVideoBaseUrl: '',
-	perceptionStreamUrls: {},
-	perceptionStreamBaseUrl: '',
-	perceptionStreamPathTemplate: '/streams/{camera_id}.mjpg',
-	cloudflareDriveWsUrl: '',
-	tailscaleDriveWsUrl: ''
+	archiveVideoBaseUrl: ''
 };
 
 let configPromise: Promise<RuntimeConfig> | null = null;
 
-
-function withDefaultPath(path: string | undefined, fallback: string): string {
-	if (!path) return fallback;
-	return path.startsWith('/') ? path : `/${path}`;
+function trimTrailingSlash(value: string | undefined, fallback: string): string {
+	return (value || fallback).trim().replace(/\/+$/, '');
 }
 
 function normalizeConfig(config: Partial<RuntimeConfig>): RuntimeConfig {
-	const apiBaseUrl = (config.apiBaseUrl || DEFAULT_CONFIG.apiBaseUrl).replace(/\/+$/, '');
-	const detectionsApiBaseUrl = (
-		config.detectionsApiBaseUrl ||
-		config.apiBaseUrl ||
-		DEFAULT_CONFIG.detectionsApiBaseUrl
-	).replace(/\/+$/, '');
-
 	return {
-		apiBaseUrl,
-		detectionsApiBaseUrl,
-		detectionRoutes: {
-			recent: withDefaultPath(
-				config.detectionRoutes?.recent,
-				DEFAULT_CONFIG.detectionRoutes.recent
-			),
-			byObject: withDefaultPath(
-				config.detectionRoutes?.byObject,
-				DEFAULT_CONFIG.detectionRoutes.byObject
-			),
-			byGeohash: withDefaultPath(
-				config.detectionRoutes?.byGeohash,
-				DEFAULT_CONFIG.detectionRoutes.byGeohash
-			)
-		},
-		stateBaseUrl: (
-			config.stateBaseUrl ||
-			config.apiBaseUrl ||
-			DEFAULT_CONFIG.stateBaseUrl
-		).replace(/\/+$/, ''),
-		statePath: withDefaultPath(config.statePath, DEFAULT_CONFIG.statePath),
-		mapDataPath: withDefaultPath(config.mapDataPath, DEFAULT_CONFIG.mapDataPath),
-		demoVideosPath: withDefaultPath(config.demoVideosPath, DEFAULT_CONFIG.demoVideosPath),
+		wsUrl: (config.wsUrl || DEFAULT_CONFIG.wsUrl).trim(),
+		dataBaseUrl: trimTrailingSlash(config.dataBaseUrl, DEFAULT_CONFIG.dataBaseUrl),
+		detectionsBaseUrl: trimTrailingSlash(config.detectionsBaseUrl, DEFAULT_CONFIG.detectionsBaseUrl),
 		videoCameraIds: config.videoCameraIds || DEFAULT_CONFIG.videoCameraIds,
 		liveVideoUrlTemplate: config.liveVideoUrlTemplate || DEFAULT_CONFIG.liveVideoUrlTemplate,
-		archiveVideoBaseUrl: (config.archiveVideoBaseUrl || DEFAULT_CONFIG.archiveVideoBaseUrl).replace(/\/+$/, ''),
-		perceptionStreamUrls: config.perceptionStreamUrls || DEFAULT_CONFIG.perceptionStreamUrls,
-		perceptionStreamBaseUrl: (config.perceptionStreamBaseUrl || DEFAULT_CONFIG.perceptionStreamBaseUrl).replace(/\/+$/, ''),
-		perceptionStreamPathTemplate:
-			config.perceptionStreamPathTemplate || DEFAULT_CONFIG.perceptionStreamPathTemplate,
-		cloudflareDriveWsUrl: config.cloudflareDriveWsUrl || DEFAULT_CONFIG.cloudflareDriveWsUrl,
-		tailscaleDriveWsUrl: config.tailscaleDriveWsUrl || DEFAULT_CONFIG.tailscaleDriveWsUrl,
+		archiveVideoBaseUrl: trimTrailingSlash(config.archiveVideoBaseUrl, DEFAULT_CONFIG.archiveVideoBaseUrl)
 	};
 }
-
-
-function withBrowserOverrides(config: RuntimeConfig): RuntimeConfig {
-	if (typeof window === 'undefined') return config;
-
-	const params = new URLSearchParams(window.location.search);
-	const perceptionStreamBaseUrl =
-		params.get('perceptionStreamBaseUrl') || params.get('perceptionBaseUrl');
-	const perceptionStreamPathTemplate = params.get('perceptionStreamPathTemplate');
-	if (!perceptionStreamBaseUrl && !perceptionStreamPathTemplate) return config;
-
-	return normalizeConfig({
-		...config,
-		perceptionStreamBaseUrl: perceptionStreamBaseUrl || config.perceptionStreamBaseUrl,
-		perceptionStreamPathTemplate:
-			perceptionStreamPathTemplate || config.perceptionStreamPathTemplate
-	});
-}
-
 
 export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
 	if (!configPromise) {
@@ -124,9 +53,7 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
 				if (!response.ok) {
 					return DEFAULT_CONFIG;
 				}
-				return withBrowserOverrides(
-					normalizeConfig((await response.json()) as Partial<RuntimeConfig>)
-				);
+				return normalizeConfig((await response.json()) as Partial<RuntimeConfig>);
 			})
 			.catch(() => DEFAULT_CONFIG);
 	}
@@ -144,5 +71,26 @@ export function resolveLiveVideoUrl(template: string, cameraId: string): string 
 }
 
 export function buildAssetUrl(baseUrl: string, path: string): string {
-	return `${baseUrl.replace(/\/+$/, '')}${withDefaultPath(path, '/')}`;
+	const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+	return `${baseUrl.replace(/\/+$/, '')}${normalizedPath}`;
+}
+
+/**
+ * Resolve the drive WebSocket URL. Root-relative paths use the page origin
+ * (`wss:` on https pages); `http(s)://` values are rewritten to `ws(s)://`.
+ */
+export function resolveWsUrl(
+	wsUrl: string,
+	pageLocation: Pick<Location, 'protocol' | 'host'> | undefined = typeof window === 'undefined'
+		? undefined
+		: window.location
+): string {
+	const trimmed = wsUrl.trim();
+	if (!trimmed) return '';
+	if (trimmed.startsWith('/')) {
+		if (!pageLocation) return '';
+		const scheme = pageLocation.protocol === 'https:' ? 'wss' : 'ws';
+		return `${scheme}://${pageLocation.host}${trimmed}`;
+	}
+	return trimmed.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://').replace(/\/$/, '');
 }

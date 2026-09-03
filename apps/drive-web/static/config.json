@@ -1,19 +1,8 @@
 {
-  "apiBaseUrl": "https://w0j9m7dgpg.execute-api.us-west-1.amazonaws.com",
-  "detectionsApiBaseUrl": "https://w0j9m7dgpg.execute-api.us-west-1.amazonaws.com",
-  "detectionRoutes": {
-    "recent": "/detections/recent",
-    "byObject": "/detections/object/{object_id}",
-    "byGeohash": "/detections/geohash/{geohash}"
-  },
-  "stateBaseUrl": "https://w0j9m7dgpg.execute-api.us-west-1.amazonaws.com",
-  "statePath": "/state",
-  "mapDataPath": "/map-data",
-  "demoVideosPath": "/demo-videos",
+  "wsUrl": "/ws",
+  "dataBaseUrl": "/data",
+  "detectionsBaseUrl": "/detections",
   "videoCameraIds": ["ch1", "ch2", "ch3", "ch4"],
-  "perceptionStreamUrls": {},
-  "perceptionStreamBaseUrl": "http://100.72.252.40:8090",
-  "perceptionStreamPathTemplate": "/streams/{camera_id}.mjpg",
-  "cloudflareDriveWsUrl": "ws://localhost:8765",
-  "tailscaleDriveWsUrl": ""
+  "liveVideoUrlTemplate": "/camera/{camera_id}/index.m3u8",
+  "archiveVideoBaseUrl": "/archive"
 }

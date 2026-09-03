@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { DRIVE_TUNNELS, buildDriveTunnels, type DriveTunnel, type TunnelId } from '$lib/constants';
 	import type { CameraView, DriveMapId, DriveMapOption, SpawnableObject } from '$lib/types';
 
 	import {
@@ -81,7 +80,7 @@
 	import { syncV2xZones } from '$lib/stores/driveSocket';
 	import { shouldSyncZone } from '$lib/zoneRules';
 	import { fetchMapDataFull, type MapDataResponse } from '$lib/api';
-	import { loadRuntimeConfig } from '$lib/runtime-config';
+	import { loadRuntimeConfig, resolveWsUrl } from '$lib/runtime-config';
 
 	type InputMode = 'wheel' | 'keyboard';
 
@@ -90,8 +89,7 @@
 	let controlLoopId = $state<number | null>(null);
 	let inputMode = $state<InputMode>('keyboard');
 	let cameraViewRef = $state<CameraViewComponent | null>(null);
-	let driveTunnels = $state<DriveTunnel[]>(DRIVE_TUNNELS);
-	let selectedTunnel = $state<TunnelId>(DRIVE_TUNNELS[0]?.id ?? '');
+	let driveWsUrl = $state('');
 	let selectedVehicle = $state('vehicle.tesla.model3');
 	let showObjectPlacer = $state(false);
 	let showV2xPlacer = $state(false);
@@ -187,19 +185,6 @@
 		)
 	);
 
-	function getSelectedUrl(): string {
-		return driveTunnels.find(t => t.id === selectedTunnel)?.url ?? driveTunnels[0]?.url ?? '';
-	}
-
-	function switchTunnel(id: TunnelId) {
-		if (id === selectedTunnel) return;
-		selectedTunnel = id;
-		// Reconnect with the new URL — clear vehicle list so it re-fetches
-		vehicleList.set([]);
-		disconnect();
-		connect(getSelectedUrl());
-	}
-
 	async function refreshMapData() {
 		try {
 			mapData = await fetchMapDataFull();
@@ -268,16 +253,9 @@
 	onMount(async () => {
 		startPolling();
 		startKeyboardInput();
-		try {
-			const config = await loadRuntimeConfig();
-			driveTunnels = buildDriveTunnels(config);
-			selectedTunnel = driveTunnels[0]?.id ?? '';
-		} catch {
-			driveTunnels = DRIVE_TUNNELS;
-			selectedTunnel = driveTunnels[0]?.id ?? '';
-		}
-		const driveUrl = getSelectedUrl();
-		if (driveUrl) connect(driveUrl);
+		const config = await loadRuntimeConfig();
+		driveWsUrl = resolveWsUrl(config.wsUrl);
+		if (driveWsUrl) connect(driveWsUrl);
 
 		setOnFrame((blob: Blob) => {
 			if (cameraViewRef) {
@@ -613,21 +591,6 @@
 						</div>
 					</div>
 
-					<!-- Tunnel selector -->
-					<div class="mb-4">
-						<p class="block text-left text-[10px] font-body text-gray-600 tracking-widest uppercase mb-1.5">Tunnel</p>
-						<div class="flex bg-gray-800/50 rounded-xl p-1 border border-gray-800">
-							{#each driveTunnels as tunnel}
-								<button onclick={() => switchTunnel(tunnel.id)}
-									class="flex-1 px-3 py-2 rounded-lg text-xs font-body tracking-wider transition-all duration-200 cursor-pointer
-									{selectedTunnel === tunnel.id
-										? 'bg-gray-700 text-white shadow-sm'
-										: 'text-gray-500 hover:text-gray-300'}">
-									{tunnel.label.toUpperCase()}
-								</button>
-							{/each}
-						</div>
-					</div>
 
 					<!-- Vehicle picker -->
 					<div class="mb-3">

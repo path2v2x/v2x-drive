@@ -1,5 +1,3 @@
-import type { RuntimeConfig } from './runtime-config';
-
 export const MAP_CENTER = { lat: 37.915, lon: -122.335 };
 
 export const DEFAULT_ZOOM = 16;
@@ -31,88 +29,6 @@ export const SNAPSHOT_PLACEHOLDER =
 	);
 
 // ── Drive Mode Constants ──
-
-const DEFAULT_TAILSCALE_DRIVE_WS_URL = '';
-
-const DEFAULT_CLOUDFLARE_DRIVE_WS_URL = '';
-
-export interface DriveTunnel {
-	id: string;
-	label: string;
-	url: string;
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-	const normalized = hostname
-		.trim()
-		.toLowerCase()
-		.replace(/^\[|\]$/g, '')
-		.replace(/\.$/, '');
-	return (
-		normalized === 'localhost' ||
-		normalized === '::1' ||
-		/^127(?:\.\d{1,3}){1,3}$/.test(normalized)
-	);
-}
-
-function normalizeWsUrl(url: string | undefined, browserHostname?: string): string {
-	if (!url) return '';
-	const candidate = url.trim().replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
-	try {
-		const parsed = new URL(candidate);
-		if (!['ws:', 'wss:'].includes(parsed.protocol) || parsed.username || parsed.password) return '';
-		const endpointIsLoopback = isLoopbackHostname(parsed.hostname);
-		const browserIsLoopback = browserHostname
-			? isLoopbackHostname(browserHostname)
-			: true;
-		// Browser-local loopback points at the viewer's laptop, not the Path PC.
-		if (endpointIsLoopback && !browserIsLoopback) return '';
-		return parsed.toString().replace(/\/$/, '');
-	} catch {
-		return '';
-	}
-}
-
-export function buildDriveTunnels(
-	config?: Pick<RuntimeConfig, 'cloudflareDriveWsUrl' | 'tailscaleDriveWsUrl'>,
-	browserHostname = typeof window === 'undefined' ? undefined : window.location.hostname
-): DriveTunnel[] {
-	const cloudflareDriveWsUrl = normalizeWsUrl(
-		config ? config.cloudflareDriveWsUrl : DEFAULT_CLOUDFLARE_DRIVE_WS_URL,
-		browserHostname
-	);
-	const tailscaleDriveWsUrl = normalizeWsUrl(
-		config?.tailscaleDriveWsUrl || DEFAULT_TAILSCALE_DRIVE_WS_URL,
-		browserHostname
-	);
-
-	return [
-		...(cloudflareDriveWsUrl
-			? [
-					{
-						id: 'cloudflare',
-						label: 'Cloudflare',
-						url: cloudflareDriveWsUrl
-					}
-				]
-			: []),
-		...(tailscaleDriveWsUrl
-			? [
-					{
-						id: 'tailscale',
-						label: 'Tailscale',
-						url: tailscaleDriveWsUrl
-					}
-				]
-			: [])
-	] satisfies DriveTunnel[];
-}
-
-export const DRIVE_TUNNELS = buildDriveTunnels();
-
-export type TunnelId = DriveTunnel['id'];
-
-export const DRIVE_WS_URL: string = DRIVE_TUNNELS[0]?.url ?? '';
 
 export const GAMEPAD_DEADZONE = 0.005;
 

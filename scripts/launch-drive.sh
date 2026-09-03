@@ -20,7 +20,6 @@ BRIDGE_DIR="${REPO_ROOT}/apps/drive-server"
 
 # ── Configurable ──
 VENV="${VENV:-/home/path/V2XCarla/carla-venv-310/bin/activate}"
-AWS_PROFILE="${AWS_PROFILE:-Path-Emerging-Dev-147229569658}"
 CARLA_PORT="${CARLA_PORT:-2000}"
 WS_PORT="${WS_PORT:-8765}"
 
@@ -53,17 +52,7 @@ trap request_shutdown INT TERM
 trap cleanup EXIT
 
 # ─────────────────────────────────────────────────────────────
-# 1. Check AWS credentials
-# ─────────────────────────────────────────────────────────────
-echo "Checking AWS credentials..."
-if ! aws sts get-caller-identity --profile "$AWS_PROFILE" &>/dev/null; then
-    echo "  ERROR: AWS credentials for profile '$AWS_PROFILE' are not valid."
-    exit 1
-fi
-echo "  AWS OK"
-
-# ─────────────────────────────────────────────────────────────
-# 2. Activate venv
+# 1. Activate venv
 # ─────────────────────────────────────────────────────────────
 echo "Activating Python venv..."
 if [ ! -f "$VENV" ]; then
@@ -76,7 +65,7 @@ fi
 source "$VENV"
 
 # ─────────────────────────────────────────────────────────────
-# 3. Verify CARLA is already running
+# 2. Verify CARLA is already running
 # ─────────────────────────────────────────────────────────────
 echo "Checking CARLA on port $CARLA_PORT..."
 if python3 -c "
@@ -95,11 +84,10 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────
-# 4. Start Drive Server
+# 3. Start Drive Server
 # ─────────────────────────────────────────────────────────────
 echo "Starting Drive Server..."
 cd "$BRIDGE_DIR"
-export AWS_PROFILE
 export DTB_CARLA_HOST="${CARLA_HOST:-localhost}"
 export DTB_CARLA_PORT="$CARLA_PORT"
 export DTB_WS_PORT="$WS_PORT"

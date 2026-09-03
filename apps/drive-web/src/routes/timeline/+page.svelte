@@ -5,29 +5,33 @@
 	import LiveVideoCard from '$lib/components/LiveVideoCard.svelte';
 	import TimelineStrip from '$lib/components/TimelineStrip.svelte';
 	import RecentDetectionsPanel from '$lib/components/RecentDetectionsPanel.svelte';
-	import { fetchDetectionTimeline } from '$lib/api';
+	import { fetchDetectionCoverage, fetchDetectionObjects } from '$lib/api';
 	import { loadRuntimeConfig, type RuntimeConfig } from '$lib/runtime-config';
 	import {
 		TIMELINE_SPAN_MS,
+		coverageBucketSecondsForSpan,
 		parseIsoMs,
 		toIsoMillis,
 		windowForCursor,
 		type PlaybackWindow
 	} from '$lib/timeline';
-	import type { DetectionTimeline, TimelineEvent } from '$lib/types';
+	import type { DetectionCoverage, DetectionObject } from '$lib/types';
+
+	const DEFAULT_VIEW_SPAN_MS = 24 * 60 * 60 * 1000;
 
 	let runtimeConfig = $state<RuntimeConfig | null>(null);
 	let mode = $state<'live' | 'archive'>('live');
 	let nowMs = $state(Date.now());
 	let cursorMs = $state(Date.now());
-	let viewStartMs = $state(Date.now() - TIMELINE_SPAN_MS);
+	let viewStartMs = $state(Date.now() - DEFAULT_VIEW_SPAN_MS);
 	let viewEndMs = $state(Date.now());
 	let playing = $state(true);
 	let playbackWindow = $state<PlaybackWindow | null>(null);
 	let seekNonce = $state(0);
 	let primaryCameraId = $state('ch1');
 	let selectedObjectId = $state<string | null>(null);
-	let timeline = $state<DetectionTimeline | null>(null);
+	let events = $state<DetectionObject[]>([]);
+	let coverage = $state<DetectionCoverage | null>(null);
 	let timelineError = $state<string | null>(null);
 
 	let cameraIds = $derived(runtimeConfig?.videoCameraIds ?? ['ch1', 'ch2', 'ch3', 'ch4']);
@@ -43,20 +47,48 @@
 
 	let clockTimer: ReturnType<typeof setInterval> | null = null;
 	let refreshTimer: ReturnType<typeof setInterval> | null = null;
+	let coverageTimer: ReturnType<typeof setTimeout> | null = null;
+	let coverageSerial = 0;
 
-	async function loadTimeline() {
+	async function loadEvents() {
 		try {
 			const end = Date.now();
-			const start = end - TIMELINE_SPAN_MS;
-			timeline = await fetchDetectionTimeline({
-				start: toIsoMillis(start),
+			events = await fetchDetectionObjects({
+				start: toIsoMillis(end - TIMELINE_SPAN_MS),
 				end: toIsoMillis(end),
-				bucketSeconds: 60
+				limit: 1000
 			});
 			timelineError = null;
 		} catch (err) {
-			timelineError = err instanceof Error ? err.message : 'Failed to load timeline.';
+			timelineError = err instanceof Error ? err.message : 'Failed to load detections.';
 		}
+	}
+
+	/** Coverage follows the visible span so zooming in keeps the histogram fine-grained. */
+	async function loadCoverage() {
+		const serial = ++coverageSerial;
+		const start = viewStartMs;
+		const end = Math.max(viewEndMs, start + 60_000);
+		try {
+			const result = await fetchDetectionCoverage({
+				start: toIsoMillis(start),
+				end: toIsoMillis(end),
+				bucketSeconds: coverageBucketSecondsForSpan(end - start)
+			});
+			if (serial !== coverageSerial) return;
+			coverage = result;
+		} catch (err) {
+			if (serial !== coverageSerial) return;
+			timelineError = err instanceof Error ? err.message : 'Failed to load detection coverage.';
+		}
+	}
+
+	function scheduleCoverage() {
+		if (coverageTimer) clearTimeout(coverageTimer);
+		coverageTimer = setTimeout(() => {
+			coverageTimer = null;
+			void loadCoverage();
+		}, 250);
 	}
 
 
@@ -84,28 +116,20 @@
 		seekNonce += 1;
 	}
 
-	function handleSelectEvent(event: TimelineEvent) {
+	function handleSelectEvent(event: DetectionObject) {
 		selectedObjectId = event.object_id;
-		if (event.media_time_trusted !== true || event.timestamp_schema_version !== 2) {
-			timelineError =
-				'This event uses the legacy receipt-time clock; archive correlation is not trusted.';
-			return;
-		}
 		const firstSeen = parseIsoMs(event.first_seen);
 		if (firstSeen !== null) {
 			scrubTo(Math.max(firstSeen - 10_000, Date.now() - TIMELINE_SPAN_MS));
 		}
-		if (event.device_id) {
-			const channel = event.device_id.split('-').pop();
-			if (channel && cameraIds.includes(channel)) {
-				primaryCameraId = channel;
-			}
-		}
+		const camera = event.cameras.find((id) => cameraIds.includes(id));
+		if (camera) primaryCameraId = camera;
 	}
 
 	function handleViewChange(startMs: number, endMs: number) {
 		viewStartMs = startMs;
 		viewEndMs = endMs;
+		scheduleCoverage();
 	}
 
 	function handlePrimaryTime(epochMs: number) {
@@ -121,10 +145,11 @@
 		const now = Date.now();
 		nowMs = now;
 		cursorMs = now;
-		viewStartMs = now - TIMELINE_SPAN_MS;
+		viewStartMs = now - DEFAULT_VIEW_SPAN_MS;
 		viewEndMs = now;
 
-		void loadTimeline();
+		void loadEvents();
+		void loadCoverage();
 
 		clockTimer = setInterval(() => {
 			nowMs = Date.now();
@@ -135,14 +160,15 @@
 			}
 		}, 1000);
 		refreshTimer = setInterval(() => {
-			void loadTimeline();
+			void loadEvents();
+			void loadCoverage();
 		}, 60_000);
-		// Detection history is refreshed independently of local video archives.
 	});
 
 	onDestroy(() => {
 		if (clockTimer) clearInterval(clockTimer);
 		if (refreshTimer) clearInterval(refreshTimer);
+		if (coverageTimer) clearTimeout(coverageTimer);
 	});
 </script>
 
@@ -223,12 +249,12 @@
 						+30s
 					</button>
 				{/if}
-				{#if timeline}
-					<span class="ml-auto text-[11px] text-gray-500">
-						{timeline.events.length} events / {timeline.totalDetections} detections in the past 24h
-						{#if timeline.truncated}<span class="text-amber-400">(truncated)</span>{/if}
-					</span>
-				{/if}
+				<span class="ml-auto text-[11px] text-gray-500">
+					{events.length} objects in the past 72h
+					{#if coverage}
+						/ {coverage.buckets.reduce((sum, bucket) => sum + bucket.detections, 0)} detections in view
+					{/if}
+				</span>
 			</div>
 
 			{#if timelineError}
@@ -240,9 +266,9 @@
 				{viewEndMs}
 				{cursorMs}
 				liveEdgeMs={nowMs}
-				events={timeline?.events ?? []}
-				histogram={timeline?.histogram ?? []}
-				bucketSeconds={timeline?.bucketSeconds ?? 60}
+				{events}
+				histogram={coverage?.buckets ?? []}
+				bucketSeconds={coverage?.bucket_seconds ?? 300}
 				{selectedObjectId}
 				onScrub={scrubTo}
 				onSelectEvent={handleSelectEvent}

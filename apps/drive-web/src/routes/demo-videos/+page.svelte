@@ -101,7 +101,7 @@
 									preload="metadata"
 									playsinline
 								>
-									<source src={video.url} type={video.contentType} />
+									<source src={video.url} />
 									Your browser cannot play this video. Use the open link below.
 								</video>
 							</div>
@@ -114,9 +114,6 @@
 								<div class="flex flex-wrap gap-2 text-xs text-gray-300">
 									<span class="rounded-full border border-gray-700 bg-gray-950 px-3 py-1">
 										{formatBytes(video.sizeBytes)}
-									</span>
-									<span class="rounded-full border border-gray-700 bg-gray-950 px-3 py-1">
-										{video.contentType}
 									</span>
 									<span class="rounded-full border border-gray-700 bg-gray-950 px-3 py-1">
 										Uploaded {formatTimestamp(video.lastModified)}

@@ -59,7 +59,7 @@
 	}
 
 	function mediaTimeForEpoch(epochMs: number): number {
-		return archiveMediaTimeForEpoch(epochMs, localClipStartMs, windowStartMs);
+		return archiveMediaTimeForEpoch(epochMs, localClipStartMs ?? windowStartMs);
 	}
 
 	async function loadLocalArchive(serial: number) {

@@ -1,18 +1,21 @@
 """
-Background poller for the V2X detection REST API.
+Background poller for the twin server's local detection history.
 
-Periodically fetches recent detections, converts their GPS coordinates to
-CARLA world locations, and upserts them into the shared ObjectRegistry.
+Periodically fetches the detections recorded in the last few seconds,
+converts their GPS coordinates to CARLA world locations, and upserts them
+into the shared ObjectRegistry that feeds ``api/state.json``.
 """
 
 import logging
 import threading
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import requests
 import carla
 
 from digital_twin_bridge.config import Config
+from digital_twin_bridge.detections_api import make_history_fetcher
 from digital_twin_bridge.object_registry import ObjectRegistry
 from digital_twin_bridge.geo_utils import gps_to_carla
 
@@ -20,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 class V2XPoller:
-    """Polls the V2X REST API and feeds detections into an
+    """Polls the detection history and feeds detections into an
     :class:`ObjectRegistry`.
 
     The poller runs in a daemon thread so it does not prevent the process
@@ -37,6 +40,7 @@ class V2XPoller:
         self._config = config
         self._registry = registry
         self._carla_map = carla_map
+        self._fetch = make_history_fetcher(config)
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -53,39 +57,31 @@ class V2XPoller:
     def poll_once(self) -> int:
         """Execute a single poll cycle.
 
-        Fetches detections from the V2X API, resolves their GPS
-        coordinates to CARLA world locations, and updates the registry.
+        Fetches the detections recorded in the last ``V2X_STALE_SECONDS`` from
+        the twin server history, resolves their GPS coordinates to CARLA world
+        locations, and updates the registry.
 
         Returns:
             The number of detections successfully processed.
         """
+        now = datetime.now(timezone.utc)
+        window_start = now - timedelta(seconds=max(1.0, float(self._config.V2X_STALE_SECONDS)))
         try:
-            resp = requests.get(
-                self._config.V2X_API_URL,
-                params={"limit": self._config.V2X_LIMIT},
-                timeout=10,
+            page = self._fetch(
+                window_start.isoformat().replace("+00:00", "Z"),
+                (now + timedelta(seconds=5)).isoformat().replace("+00:00", "Z"),
+                self._config.V2X_LIMIT,
             )
-            resp.raise_for_status()
-            data = resp.json()
         except (requests.RequestException, ValueError) as exc:
-            logger.error("V2X API request failed: %s", exc)
+            logger.error("Detection history request failed: %s", exc)
             self._prune_stale()
             return 0
 
-        if not isinstance(data, dict):
-            logger.error("V2X API returned a non-object response.")
-            self._prune_stale()
-            return 0
-
-        items = data.get("items", [])
-        if not isinstance(items, list):
-            logger.error("V2X API response 'items' is not a list.")
-            self._prune_stale()
-            return 0
+        items = page.get("items", [])
         if not items:
             stale_objects = self._prune_stale()
             logger.debug(
-                "V2X API returned 0 detections; expired %d stale objects.",
+                "Detection history returned 0 detections; expired %d stale objects.",
                 stale_objects,
             )
             return 0

@@ -595,33 +595,26 @@ class TestTestWebSocketBoundary:
 
 @pytest.mark.unit
 class TestPublisherPath:
-    def test_uplink_writes_canonical_state_object_key(self, tmp_path):
+    def test_publisher_writes_state_json_atomically(self, tmp_path):
         from digital_twin_bridge.config import Config
-        from digital_twin_bridge.uplink import Uplink
+        from digital_twin_bridge.publisher import StatePublisher
 
-        captured = {}
+        config = Config(PUBLISH_DIR=str(tmp_path), PUBLISH_BASE_URL="/data")
+        publisher = StatePublisher(config)
 
-        class S3Client:
-            def put_object(self, **kwargs):
-                captured.update(kwargs)
-
-        config = Config(LOCAL_SNAPSHOT_DIR=str(tmp_path))
-        uplink = Uplink(config)
-        uplink._s3_client = S3Client()
-
-        uplink.publish_state(
+        publisher.publish_state(
             [{"object_id": "global-car-7"}],
             {"status": "connected", "objects_tracked": 1},
         )
+        url = publisher.publish_snapshot("global-car-7", b"\xff\xd8jpeg", {"lat": 37.9})
 
-        body = json.loads(captured["Body"])
-        assert captured["Bucket"] == config.S3_BUCKET
-        assert captured["Key"] == "api/state.json"
-        assert captured["ContentType"] == "application/json"
-        assert captured["CacheControl"] == "max-age=2"
+        body = json.loads((tmp_path / "api" / "state.json").read_text())
         assert body["objects"] == [{"object_id": "global-car-7"}]
         assert body["bridge_status"]["objects_tracked"] == 1
         assert isinstance(body["updated_at"], str) and body["updated_at"]
+        assert url == "/data/snapshots/global-car-7/latest.jpg"
+        assert (tmp_path / "snapshots" / "global-car-7" / "latest.jpg").read_bytes() == b"\xff\xd8jpeg"
+        assert not [p for p in (tmp_path / "api").iterdir() if p.name.startswith(".publish-")]
 
     def test_state_snapshot_uses_producer_timestamp_for_last_updated(self):
         from digital_twin_bridge import drive_main
@@ -655,8 +648,8 @@ class TestPublisherPath:
         assert status["state_source"] == "v2x_api_registry"
         assert status["road_props_spawned"] == 0
 
-    def test_range_fetcher_forwards_opaque_continuation(self, monkeypatch):
-        from digital_twin_bridge import drive_main
+    def test_history_fetcher_adapts_items_and_continues_from_next(self, monkeypatch):
+        from digital_twin_bridge import detections_api
         from digital_twin_bridge.config import Config
 
         captured = {}
@@ -666,24 +659,47 @@ class TestPublisherPath:
                 return None
 
             def json(self):
-                return {"items": [], "next": None}
+                return {
+                    "items": [
+                        {
+                            "ts": "2026-09-03T16:28:24.103Z",
+                            "camera": "ch2",
+                            "object_id": "person_cam-001-ch2_502647",
+                            "object_type": "person",
+                            "confidence": 0.9288,
+                            "lat": 37.9158,
+                            "lon": -122.3347,
+                        }
+                    ],
+                    "next": "2026-09-03T16:28:24.203Z",
+                }
 
         def fake_get(url, *, params, timeout):
             captured.update(url=url, params=params, timeout=timeout)
             return Response()
 
-        monkeypatch.setattr(drive_main.requests, "get", fake_get)
-        fetch = drive_main.make_api_fetcher(Config())
-        fetch("start", "end", 200, next_token="opaque-token")
+        monkeypatch.setattr(detections_api.requests, "get", fake_get)
+        fetch = detections_api.make_history_fetcher(Config())
+        page = fetch("start", "end", 200, next_token="2026-09-03T16:28:24.000Z")
 
-        assert captured["url"].endswith("/detections/range")
+        assert captured["url"] == Config().DETECTIONS_HISTORY_URL
         assert captured["params"] == {
-            "start": "start",
+            "start": "2026-09-03T16:28:24.000Z",
             "end": "end",
             "limit": 200,
-            "next": "opaque-token",
         }
         assert captured["timeout"] == Config().SCENE_FETCH_REQUEST_TIMEOUT_SECONDS
+        assert page["next"] == "2026-09-03T16:28:24.203Z"
+        assert page["items"] == [
+            {
+                "object_id": "person_cam-001-ch2_502647",
+                "object_type": "person",
+                "confidence_score": 0.9288,
+                "timestamp_utc": "2026-09-03T16:28:24.103Z",
+                "device_id": "cam-001-ch2",
+                "gps_location": {"latitude": 37.9158, "longitude": -122.3347},
+            }
+        ]
 
     def test_state_snapshot_rejects_stale_objects_and_snapshot_urls(self):
         from digital_twin_bridge import drive_main

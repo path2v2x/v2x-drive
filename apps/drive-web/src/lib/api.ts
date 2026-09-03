@@ -1,14 +1,14 @@
 import { buildAssetUrl, loadRuntimeConfig } from './runtime-config';
 import type {
 	DemoVideo,
-	DetectionPage,
-	DetectionQueryMode,
-	DetectionTimeline,
-	LivePerceptionDetections
+	DetectionCoverage,
+	DetectionHistoryPage,
+	DetectionObject,
+	TrackedObject
 } from './types';
 
 export interface StateJson {
-	objects: import('./types').TrackedObject[];
+	objects: TrackedObject[];
 	bridge_status?: {
 		status?: string | null;
 		carla_fps?: number | null;
@@ -19,18 +19,14 @@ export interface StateJson {
 	updated_at?: string | null;
 }
 
-interface DemoVideosResponse {
-	items: DemoVideo[];
-}
-
 /**
- * Fetch the current digital twin state from the read API.
- * The API reads the private S3 state bucket and rewrites snapshot URLs.
+ * Fetch the current drive-server state. The drive server writes
+ * `api/state.json` under the published data directory every few seconds.
  */
 export async function fetchState(): Promise<StateJson> {
 	const config = await loadRuntimeConfig();
-	const url = `${buildAssetUrl(config.stateBaseUrl, config.statePath)}?_t=${Date.now()}`;
-	const response = await fetch(url);
+	const url = `${buildAssetUrl(config.dataBaseUrl, '/api/state.json')}?_t=${Date.now()}`;
+	const response = await fetch(url, { cache: 'no-store' });
 
 	if (!response.ok) {
 		throw new Error(`Failed to fetch state: ${response.status}`);
@@ -40,8 +36,8 @@ export async function fetchState(): Promise<StateJson> {
 }
 
 /**
- * Fetch road polyline data for the map overlay from the read API.
- * Returns an array of polylines, each polyline is an array of [lon, lat] pairs.
+ * Road polyline data for the map overlay, exported by the drive server from
+ * the active CARLA map. Each polyline is an array of [lon, lat] pairs.
  */
 export interface MapDataResponse {
 	geo_ref: {
@@ -54,15 +50,9 @@ export interface MapDataResponse {
 	road_network: number[][][];
 }
 
-export async function fetchMapData(): Promise<number[][][]> {
-	const data = await fetchMapDataFull();
-	return data.road_network;
-}
-
 export async function fetchMapDataFull(): Promise<MapDataResponse> {
 	const config = await loadRuntimeConfig();
-	const url = buildAssetUrl(config.stateBaseUrl, config.mapDataPath);
-	const response = await fetch(url);
+	const response = await fetch(buildAssetUrl(config.dataBaseUrl, '/api/map-data.json'));
 
 	if (!response.ok) {
 		throw new Error(`Failed to fetch map data: ${response.status}`);
@@ -94,7 +84,7 @@ export function archiveListUrl(
 	start: string,
 	end: string
 ): string {
-	const url = new URL(`${baseUrl.replace(/\/+$/, '')}/list`);
+	const url = new URL(`${baseUrl.replace(/\/+$/, '')}/list`, pageOrigin());
 	url.searchParams.set('path', cameraId);
 	url.searchParams.set('start', start);
 	url.searchParams.set('end', end);
@@ -107,12 +97,17 @@ export function archiveClipUrl(
 	start: string,
 	durationSeconds: number
 ): string {
-	const url = new URL(`${baseUrl.replace(/\/+$/, '')}/get`);
+	const url = new URL(`${baseUrl.replace(/\/+$/, '')}/get`, pageOrigin());
 	url.searchParams.set('path', cameraId);
 	url.searchParams.set('start', start);
 	url.searchParams.set('duration', String(durationSeconds));
 	url.searchParams.set('format', 'mp4');
 	return url.toString();
+}
+
+/** Base for resolving root-relative config URLs; tests run without a window. */
+function pageOrigin(): string {
+	return typeof window === 'undefined' ? 'http://localhost' : window.location.origin;
 }
 
 export async function listArchiveSegments(
@@ -144,155 +139,107 @@ export async function listArchiveSegments(
 		.sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
 }
 
+// ── Twin server detection history ──
 
-export async function fetchDetectionTimeline(options: {
-	start: string;
-	end: string;
-	bucketSeconds?: number;
-	deviceId?: string;
-	objectType?: string;
-}): Promise<DetectionTimeline> {
+async function fetchDetectionsJson<T>(
+	route: '/coverage' | '/history' | '/objects',
+	params: Record<string, string>,
+	label: string
+): Promise<T> {
 	const config = await loadRuntimeConfig();
-	const url = new URL(`${config.detectionsApiBaseUrl.replace(/\/+$/, '')}/detections/timeline`);
-	url.searchParams.set('start', options.start);
-	url.searchParams.set('end', options.end);
-	if (options.bucketSeconds) {
-		url.searchParams.set('bucket', String(options.bucketSeconds));
-	}
-	if (options.deviceId) {
-		url.searchParams.set('device_id', options.deviceId);
-	}
-	if (options.objectType) {
-		url.searchParams.set('object_type', options.objectType);
+	const url = new URL(`${config.detectionsBaseUrl}${route}`, pageOrigin());
+	for (const [key, value] of Object.entries(params)) {
+		url.searchParams.set(key, value);
 	}
 	const response = await fetch(url, {
 		headers: { accept: 'application/json' },
 		cache: 'no-store'
 	});
-
 	if (!response.ok) {
-		throw new Error(`Failed to fetch detection timeline: ${await readErrorDetail(response)}`);
+		throw new Error(`Failed to fetch ${label}: ${await readErrorDetail(response)}`);
 	}
-
-	return (await response.json()) as DetectionTimeline;
+	return (await response.json()) as T;
 }
 
-export async function fetchDetectionsRange(options: {
+export function fetchDetectionCoverage(options: {
+	start: string;
+	end: string;
+	bucketSeconds: number;
+}): Promise<DetectionCoverage> {
+	return fetchDetectionsJson<DetectionCoverage>(
+		'/coverage',
+		{ start: options.start, end: options.end, bucket: String(options.bucketSeconds) },
+		'detection coverage'
+	);
+}
+
+export async function fetchDetectionObjects(options: {
 	start: string;
 	end: string;
 	limit?: number;
-	next?: string | null;
-}): Promise<DetectionPage> {
-	const config = await loadRuntimeConfig();
-	const url = new URL(`${config.detectionsApiBaseUrl.replace(/\/+$/, '')}/detections/range`);
-	url.searchParams.set('start', options.start);
-	url.searchParams.set('end', options.end);
-	url.searchParams.set('limit', String(options.limit || 50));
-	if (options.next) {
-		url.searchParams.set('next', options.next);
-	}
-	const response = await fetch(url, {
-		headers: { accept: 'application/json' },
-		cache: 'no-store'
-	});
+}): Promise<DetectionObject[]> {
+	const page = await fetchDetectionsJson<{ items: DetectionObject[] }>(
+		'/objects',
+		{ start: options.start, end: options.end, limit: String(options.limit ?? 200) },
+		'detection objects'
+	);
+	return page.items;
+}
 
-	if (!response.ok) {
-		throw new Error(`Failed to fetch detections range: ${await readErrorDetail(response)}`);
-	}
+export function fetchDetectionHistory(options: {
+	start: string;
+	end: string;
+	limit?: number;
+}): Promise<DetectionHistoryPage> {
+	return fetchDetectionsJson<DetectionHistoryPage>(
+		'/history',
+		{ start: options.start, end: options.end, limit: String(options.limit ?? 50) },
+		'detections'
+	);
+}
 
-	return (await response.json()) as DetectionPage;
+// ── Demo videos (nginx JSON autoindex of the published demo-videos directory) ──
+
+interface AutoindexEntry {
+	name: string;
+	type: 'file' | 'directory';
+	mtime?: string;
+	size?: number;
+}
+
+const DEMO_VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mov', '.m4v'];
+
+export function demoVideoTitle(fileName: string): string {
+	const stem = fileName.replace(/\.[^.]+$/, '') || fileName;
+	const words = stem.replace(/[_-]+/g, ' ').trim();
+	return words || fileName;
 }
 
 export async function fetchDemoVideos(): Promise<DemoVideo[]> {
 	const config = await loadRuntimeConfig();
-	const response = await fetch(
-		buildAssetUrl(config.apiBaseUrl, config.demoVideosPath),
-		{ cache: 'no-store' }
-	);
+	const directoryUrl = `${buildAssetUrl(config.dataBaseUrl, '/demo-videos')}/`;
+	const response = await fetch(directoryUrl, {
+		headers: { accept: 'application/json' },
+		cache: 'no-store'
+	});
 
 	if (!response.ok) {
 		throw new Error(`Failed to fetch demo videos: ${response.status}`);
 	}
 
-	return ((await response.json()) as DemoVideosResponse).items || [];
-}
-
-function buildDetectionsUrl(
-	mode: DetectionQueryMode,
-	query: string,
-	limit: number,
-	next: string | null,
-	config: Awaited<ReturnType<typeof loadRuntimeConfig>>
-): string {
-	const base = config.detectionsApiBaseUrl.replace(/\/+$/, '');
-	let path = config.detectionRoutes.recent;
-
-	if (mode === 'object') {
-		path = config.detectionRoutes.byObject.replace('{object_id}', encodeURIComponent(query));
-	} else if (mode === 'geohash') {
-		path = config.detectionRoutes.byGeohash.replace('{geohash}', encodeURIComponent(query));
-	}
-
-	const url = new URL(`${base}${path}`);
-	url.searchParams.set('limit', String(limit));
-	if (next) {
-		url.searchParams.set('next', next);
-	}
-	return url.toString();
-}
-
-export async function fetchDetectionsPage(options: {
-	mode: DetectionQueryMode;
-	query?: string;
-	limit?: number;
-	next?: string | null;
-}): Promise<DetectionPage> {
-	const config = await loadRuntimeConfig();
-	const response = await fetch(
-		buildDetectionsUrl(
-			options.mode,
-			options.query?.trim() || '',
-			options.limit || 50,
-			options.next || null,
-			config
-		),
-		{
-			headers: { accept: 'application/json' },
-			cache: 'no-store'
-		}
-	);
-
-	if (!response.ok) {
-		throw new Error(`Failed to fetch detections: ${response.status}`);
-	}
-
-	return (await response.json()) as DetectionPage;
-}
-
-function buildPerceptionMetadataBaseUrl(config: Awaited<ReturnType<typeof loadRuntimeConfig>>): string {
-	if (config.perceptionStreamBaseUrl) {
-		return config.perceptionStreamBaseUrl.replace(/\/+$/, '');
-	}
-
-	const firstStreamUrl = Object.values(config.perceptionStreamUrls)[0];
-	if (!firstStreamUrl) {
-		throw new Error('Perception stream metadata is not configured.');
-	}
-
-	return new URL(firstStreamUrl).origin;
-}
-
-export async function fetchLivePerceptionDetections(): Promise<LivePerceptionDetections> {
-	const config = await loadRuntimeConfig();
-	const baseUrl = buildPerceptionMetadataBaseUrl(config);
-	const response = await fetch(`${baseUrl}/detections/latest?_t=${Date.now()}`, {
-		headers: { accept: 'application/json' },
-		cache: 'no-store'
-	});
-
-	if (!response.ok) {
-		throw new Error(`Failed to fetch live perception detections: ${response.status}`);
-	}
-
-	return (await response.json()) as LivePerceptionDetections;
+	const entries = (await response.json()) as AutoindexEntry[];
+	return entries
+		.filter(
+			(entry) =>
+				entry.type === 'file' &&
+				DEMO_VIDEO_EXTENSIONS.some((extension) => entry.name.toLowerCase().endsWith(extension))
+		)
+		.map((entry) => ({
+			fileName: entry.name,
+			title: demoVideoTitle(entry.name),
+			url: `${directoryUrl}${encodeURIComponent(entry.name)}`,
+			sizeBytes: entry.size ?? 0,
+			lastModified: entry.mtime ? new Date(entry.mtime).toISOString() : null
+		}))
+		.sort((a, b) => (b.lastModified ?? '').localeCompare(a.lastModified ?? ''));
 }

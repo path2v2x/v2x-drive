@@ -11,7 +11,6 @@ User=path
 Group=path
 SupplementaryGroups=docker
 WorkingDirectory=/home/path/v2x-drive
-Environment=AWS_PROFILE=Path-Emerging-Dev-147229569658
 Environment=CARLA_CONTAINER=carla-rr-maps
 Environment=CARLA_IMAGE=ghcr.io/simforgeinc/carla-rr-maps:0.10.0
 Environment="CARLA_COMMAND=./CarlaUnreal.sh -RenderOffScreen -vulkan -nosound -carla-rpc-port=2000"

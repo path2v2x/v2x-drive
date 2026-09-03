@@ -18,12 +18,10 @@ class Config:
     CARLA_PORT: int = 2000
     CARLA_MAP: str = "San_Ramon"
 
-    # V2X API
-    V2X_API_URL: str = (
-        "https://w0j9m7dgpg.execute-api.us-west-1.amazonaws.com/detections/recent"
-    )
+    # Detection history served by the twin server on the same host
+    DETECTIONS_HISTORY_URL: str = "http://127.0.0.1:8190/detections/history"
     V2X_POLL_INTERVAL: float = 5.0
-    V2X_LIMIT: int = 50
+    V2X_LIMIT: int = 500
     V2X_STALE_SECONDS: float = 300.0
     STATE_OBJECT_MAX_AGE_SECONDS: float = 30.0
     STATE_SNAPSHOT_MAX_AGE_SECONDS: float = 90.0
@@ -46,17 +44,12 @@ class Config:
     SETTLE_TICKS: int = 2
     CAPTURE_INTERVAL: float = 30.0  # seconds between capture cycles
 
-    # AWS settings
-    AWS_PROFILE: str = "Path-Emerging-Dev-147229569658"
-    S3_BUCKET: str = "v2x-backend-state-147229569658-us-west-1"
-    S3_REGION: str = "us-west-1"
-    S3_PUBLIC_BASE_URL: str = ""
+    # Dashboard data publishing (served by nginx at PUBLISH_BASE_URL)
+    PUBLISH_DIR: str = "/var/www/v2x-drive-data"
+    PUBLISH_BASE_URL: str = "/data"
 
-    # Local storage for Phase 1 testing
+    # Local scratch for map exports
     LOCAL_SNAPSHOT_DIR: str = "snapshots/"
-
-    # GraphQL / AppSync (Phase 3)
-    GRAPHQL_ENDPOINT: str = ""
 
     # Drive server settings
     WS_PORT: int = 8765
@@ -88,21 +81,6 @@ class Config:
     # (vehicle.carlamotors.firetruck) triggers a "pull over" v2x_alert toast
     # on the ego's browser. Only fires when the EVA is closing on the ego.
     EVA_WARNING_DISTANCE_M: float = 20.0
-
-    # Digital twin: mirrored street cameras + live detection sync.
-    # Both only activate on the georeferenced RFS map. "off" disables.
-    TWIN_RIG: str = "on"
-    TWIN_SYNC: str = "on"
-    # Camera-pose configuration used by the CARLA twin rig.
-    CAMERAS_JSON: str = ""
-    # Poll the co-perception service locally instead of round-tripping through
-    # the cloud.
-    TWIN_DETECTIONS_URL: str = "http://127.0.0.1:8090/detections/latest"
-    TWIN_POLL_INTERVAL: float = 1.0
-    TWIN_DESPAWN_SECONDS: float = 12.0
-    TWIN_CAM_WIDTH: int = 1280
-    TWIN_CAM_HEIGHT: int = 960
-    TWIN_CAM_FPS: float = 12.0
 
     # Logging
     LOG_LEVEL: str = "INFO"
