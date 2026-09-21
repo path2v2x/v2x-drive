@@ -161,6 +161,57 @@ TRAFFIC_PRESETS = {
 # Module-level traffic tracking so periodic_actor_audit can exclude them
 _traffic_actor_ids: set[int] = set()
 
+# ── coexist branch helpers ──────────────────────────────────────────────────
+from digital_twin_bridge.actor_ownership import is_drive_owned  # noqa: E402
+
+
+def _drive_config():
+    from digital_twin_bridge.config import Config
+    return Config.from_env()
+
+
+def _drive_tm_port() -> int:
+    return _drive_config().TM_PORT
+
+
+def _protect_foreign() -> bool:
+    return _drive_config().protect_foreign_actors
+
+
+def _voices_roles() -> tuple:
+    return _drive_config().voices_roles
+
+
+def _keep_voices_ego() -> bool:
+    return _drive_config().keep_voices_ego
+
+
+def _claim_voices_role(session) -> str:
+    """First configured VOICES role (e.g. PATH-M-1) not held by another session, else ''."""
+    taken = {getattr(s, "_voices_role", "") for s in _active_sessions if s is not session}
+    for role in _voices_roles():
+        if role not in taken:
+            return role
+    return ""
+
+
+def _adopt_kept_ego(world, role: str, spawn_transform):
+    """Reuse the vehicle a previous session left in the world under ``role``."""
+    import carla
+    for actor in world.get_actors().filter("vehicle.*"):
+        attrs = actor.attributes
+        if not attrs or attrs.get("role_name") != role:
+            continue
+        try:
+            actor.set_transform(spawn_transform)
+            actor.set_target_velocity(carla.Vector3D(0, 0, 0))
+            actor.apply_control(carla.VehicleControl())
+        except Exception:
+            logger.warning("Could not reset kept ego %s", role, exc_info=True)
+        logger.info("Adopted kept VOICES ego %s (actor id %d)", role, actor.id)
+        return actor
+    return None
+
 # Dynamic actors are individually spawned from the Add Actor panel and carry
 # session-scoped moving geofences.
 _dynamic_actor_ids: set[int] = set()
@@ -468,6 +519,8 @@ class DriveSession:
         # Each session stamps its own ego with a unique role and the runner
         # rewrites the .xosc on launch to reference that exact role.
         self._ego_role = f"ego_vehicle_{id(self):x}"
+        self._voices_role = ""  # coexist: scenario role taken by this session, if any
+        self._release_voices_ego = False
         self._scene_fetch_timeout_seconds = max(
             0.1, float(scene_fetch_timeout_seconds)
         )
@@ -636,6 +689,11 @@ class DriveSession:
             # instead of trying to spawn a duplicate from the .xosc. The role
             # is per-session (see self._ego_role) so SR picks this session's
             # ego specifically when other drivers are sharing the world.
+            # coexist: optionally take a VOICES/DT scenario role (e.g. PATH-M-1) so the
+            # TENA adapter publishes this browser-driven car.
+            self._voices_role = _claim_voices_role(self)
+            if self._voices_role:
+                self._ego_role = self._voices_role
             ego_bp.set_attribute("role_name", self._ego_role)
 
             import random
@@ -645,10 +703,14 @@ class DriveSession:
 
             random.shuffle(spawn_points)
             self.vehicle = None
-            for sp in spawn_points:
-                self.vehicle = self._world.try_spawn_actor(ego_bp, sp)
-                if self.vehicle is not None:
-                    break
+            if self._voices_role:
+                # coexist: reuse the car a previous session left under this role
+                self.vehicle = _adopt_kept_ego(self._world, self._voices_role, spawn_points[0])
+            if self.vehicle is None:
+                for sp in spawn_points:
+                    self.vehicle = self._world.try_spawn_actor(ego_bp, sp)
+                    if self.vehicle is not None:
+                        break
             if self.vehicle is None:
                 raise RuntimeError("Failed to spawn vehicle")
 
@@ -715,6 +777,7 @@ class DriveSession:
                 "objects_count": len(recon_result.spawned_actors),
                 "sensor_actor_ids": sensor_actor_ids,
                 "scene_actor_ids": scene_actor_ids,
+                "ego_role": self._ego_role,
                 "owned_actor_ids": self.owned_actor_ids(),
             }
         except Exception:
@@ -1475,8 +1538,13 @@ class DriveSession:
         client = carla.Client(config.CARLA_HOST, config.CARLA_PORT)
 
         client.set_timeout(10.0)
-        tm = client.get_trafficmanager()
+        tm = client.get_trafficmanager(config.TM_PORT)  # coexist: DT's manual car owns 8000
         tm.set_synchronous_mode(True)
+        if not config.tm_osm_mode:
+            try:
+                tm.set_osm_mode(False)  # CARLA 0.10.0 default deletes cars at dead-end roads
+            except Exception:
+                pass
         return tm, tm.get_port()
 
     def _build_transform(self, location, rotation):
@@ -1655,7 +1723,7 @@ class DriveSession:
         destroyed = False
         if actor is not None:
             try:
-                actor.set_autopilot(False)
+                actor.set_autopilot(False, _drive_tm_port())
             except Exception:
                 pass
             try:
@@ -1837,8 +1905,11 @@ class DriveSession:
             if role.startswith("ego_vehicle"):
                 preserved += 1
                 continue
+            if _protect_foreign() and not is_drive_owned(actor, _voices_roles(), _keep_voices_ego()):
+                preserved += 1  # coexist: other clients' cars (DT, HIL_Tool) are not ours to clear
+                continue
             try:
-                actor.set_autopilot(False)
+                actor.set_autopilot(False, _drive_tm_port())
             except Exception:
                 pass
             try:
@@ -1874,7 +1945,7 @@ class DriveSession:
             actor = self._world.get_actor(actor_id)
             if actor is not None:
                 try:
-                    actor.set_autopilot(False)
+                    actor.set_autopilot(False, _drive_tm_port())
                 except Exception:
                     pass
                 try:
@@ -2234,8 +2305,12 @@ class DriveSession:
             "max": BIRD_ZOOM_MAX_ALTITUDE_M,
         }
 
-    def end(self) -> dict:
-        """End the session: destroy camera, vehicle, cleanup scene."""
+    def end(self, release: bool = False) -> dict:
+        """End the session: destroy camera, vehicle, cleanup scene.
+
+        coexist: ``release`` also destroys a kept VOICES ego.
+        """
+        self._release_voices_ego = bool(release)
         self._force_cleanup()
         if not any(s is not self and s.is_active for s in _active_sessions):
             try:
@@ -2282,11 +2357,25 @@ class DriveSession:
 
         # Vehicle
         if self.vehicle is not None:
-            try:
-                self.vehicle.destroy()
-            except Exception as e:
-                logger.warning("Vehicle destroy failed: %s", e)
+            if self._voices_role and _keep_voices_ego() and not self._release_voices_ego:
+                # coexist: keep the VOICES ego alive so the DT adapter's binding survives;
+                # the next session with this role adopts it (see _adopt_kept_ego).
+                try:
+                    import carla
+                    self.vehicle.apply_control(carla.VehicleControl(brake=1.0, hand_brake=True))
+                    self.vehicle.set_target_velocity(carla.Vector3D(0, 0, 0))
+                except Exception as e:
+                    logger.debug("Kept ego park failed: %s", e)
+                logger.info("Kept VOICES ego %s (actor id %s) in the world",
+                            self._voices_role, getattr(self.vehicle, "id", "?"))
+            else:
+                try:
+                    self.vehicle.destroy()
+                except Exception as e:
+                    logger.warning("Vehicle destroy failed: %s", e)
             self.vehicle = None
+        self._voices_role = ""
+        self._release_voices_ego = False
 
         # Dynamic Add Actor autopilot vehicles
         for actor_id in list(self._dynamic_actors):
@@ -2537,7 +2626,7 @@ async def handle_message(session: DriveSession, msg: dict, map_controller=None) 
                 return {"type": "trajectory_status", "active": False}
             return {"type": "trajectory_status", **session._trajectory_player.status()}
         elif msg_type == "end_session":
-            return session.end()
+            return session.end(release=bool(msg.get("release", False)))
         else:
             return {"type": "error", "message": f"Unknown message type: {msg_type}"}
     except Exception as e:

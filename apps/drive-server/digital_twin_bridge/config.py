@@ -9,6 +9,10 @@ import logging
 from dataclasses import dataclass
 
 
+def _truthy(value) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass
 class Config:
     """Bridge configuration loaded from environment variables."""
@@ -85,6 +89,13 @@ class Config:
     # Logging
     LOG_LEVEL: str = "INFO"
 
+    # coexist branch: sharing the CARLA world with other clients (DT adapter, HIL_Tool)
+    PROTECT_FOREIGN_ACTORS: str = "1"  # "1": never destroy actors this server did not create
+    TM_PORT: int = 8100                 # Traffic Manager port for traffic/dynamic actors (DT owns 8000)
+    TM_OSM_MODE: str = "0"             # "0": OSM mode off (CARLA 0.10.0 default deletes cars at dead ends)
+    VOICES_EGO_ROLE: str = ""          # e.g. "PATH-M-1": first session's ego takes this role_name
+    KEEP_VOICES_EGO: str = "1"         # "1": a VOICES-role ego survives session end; next session adopts it
+
     @classmethod
     def from_env(cls) -> "Config":
         """Create a Config instance from environment variables.
@@ -107,6 +118,23 @@ class Config:
                 else:
                     kwargs[fld.name] = env_val
         return cls(**kwargs)
+
+    # coexist branch helpers
+    @property
+    def protect_foreign_actors(self) -> bool:
+        return _truthy(self.PROTECT_FOREIGN_ACTORS)
+
+    @property
+    def keep_voices_ego(self) -> bool:
+        return _truthy(self.KEEP_VOICES_EGO)
+
+    @property
+    def tm_osm_mode(self) -> bool:
+        return _truthy(self.TM_OSM_MODE)
+
+    @property
+    def voices_roles(self) -> tuple:
+        return tuple(r.strip() for r in str(self.VOICES_EGO_ROLE or "").split(",") if r.strip())
 
     def setup_logging(self) -> None:
         """Configure the root logger based on ``LOG_LEVEL``."""

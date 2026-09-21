@@ -88,6 +88,12 @@ fi
 # ─────────────────────────────────────────────────────────────
 echo "Starting Drive Server..."
 cd "$BRIDGE_DIR"
+# coexist branch: optional per-host overrides (DTB_* variables), see ~/.v2x-drive.env
+COEXIST_ENV="${HOME:-/home/path}/.v2x-drive.env"
+if [ -f "$COEXIST_ENV" ]; then
+    set -a; . "$COEXIST_ENV"; set +a
+    echo "  Loaded overrides from $COEXIST_ENV"
+fi
 export DTB_CARLA_HOST="${CARLA_HOST:-localhost}"
 export DTB_CARLA_PORT="$CARLA_PORT"
 export DTB_WS_PORT="$WS_PORT"

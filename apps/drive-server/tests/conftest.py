@@ -428,7 +428,7 @@ class MockClient:
         self._world._map = MockMap(map_name)
         return self._world
 
-    def get_trafficmanager(self) -> MockTrafficManager:
+    def get_trafficmanager(self, port=8000) -> MockTrafficManager:  # real client takes an optional port
         return self._traffic_manager
 
 

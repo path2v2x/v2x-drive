@@ -35,6 +35,7 @@ from digital_twin_bridge.config import Config
 from digital_twin_bridge.carla_connection import CarlaConnection, drive_map_status
 from digital_twin_bridge.detections_api import make_history_fetcher
 from digital_twin_bridge.drive_server import serve_drive, active_session_count
+from digital_twin_bridge.actor_ownership import is_drive_owned  # coexist branch
 from digital_twin_bridge.object_registry import ObjectRegistry
 from digital_twin_bridge.publisher import StatePublisher
 from digital_twin_bridge.trajectory_player import TrajectoryPlayer
@@ -214,20 +215,39 @@ def enqueue_bounded(queue: asyncio.Queue, event: dict) -> None:
         pass
 
 
-def cleanup_drive_world(world) -> None:
-    """Remove drive-owned actors from the current world."""
+def cleanup_drive_world(world, protect: bool = False, voices_roles=(), keep_voices: bool = True) -> None:
+    """Remove drive-owned actors from the current world.
+
+    coexist branch: with ``protect`` on, actors created by other CARLA clients
+    (DT adapter cars, HIL_Tool traffic, kept VOICES egos) are left alone.
+    """
+    def owned(actor) -> bool:
+        return (not protect) or is_drive_owned(actor, voices_roles, keep_voices)
+
+    skipped = 0
     for actor in world.get_actors().filter("vehicle.*"):
+        if not owned(actor):
+            skipped += 1
+            continue
         logger.info("Cleaning up leftover vehicle: %s (id=%d)", actor.type_id, actor.id)
         actor.destroy()
     for actor in world.get_actors().filter("walker.*"):
+        if not owned(actor):
+            skipped += 1
+            continue
         logger.info("Cleaning up leftover walker: %s (id=%d)", actor.type_id, actor.id)
         try:
             actor.destroy()
         except Exception as e:
             logger.debug("Walker destroy failed (id=%d): %s", actor.id, e)
     for actor in world.get_actors().filter("sensor.*"):
+        if not owned(actor):
+            skipped += 1
+            continue
         logger.info("Cleaning up leftover sensor: %s (id=%d)", actor.type_id, actor.id)
         actor.destroy()
+    if skipped:
+        logger.info("Cleanup left %d foreign actor(s) alone (PROTECT_FOREIGN_ACTORS)", skipped)
     leftover_props = world.get_actors().filter("static.prop.*")
     if leftover_props:
         logger.info("Cleaning up %d leftover static prop(s)", len(leftover_props))
@@ -319,7 +339,9 @@ class DriveMapController:
             except Exception as e:
                 logger.debug("OpenSCENARIO stop before map switch failed: %s", e)
 
-            cleanup_drive_world(self._conn.world)
+            cleanup_drive_world(self._conn.world, protect=self._config.protect_foreign_actors,
+                                voices_roles=self._config.voices_roles,
+                                keep_voices=self._config.keep_voices_ego)
             self._runtime["world"] = self._conn.world
             self._runtime["carla_map"] = self._conn.carla_map
             self._runtime["trajectory_player"] = TrajectoryPlayer(
@@ -357,7 +379,8 @@ async def main():
     world = conn.world
     carla_map = conn.carla_map
 
-    cleanup_drive_world(world)
+    cleanup_drive_world(world, protect=config.protect_foreign_actors,
+                        voices_roles=config.voices_roles, keep_voices=config.keep_voices_ego)
 
     # ── V2X state registry: metadata polling only, no boot-time props ──
     # PropSpawner remains intentionally absent.  The registry keeps state.json
@@ -654,11 +677,16 @@ async def main():
                 continue
             try:
                 from digital_twin_bridge.drive_server import _traffic_actor_ids
+                def orphan(actor) -> bool:
+                    # coexist branch: other clients' actors are never orphans
+                    return (not config.protect_foreign_actors) or is_drive_owned(
+                        actor, config.voices_roles, config.keep_voices_ego)
                 vehicles = [v for v in world.get_actors().filter("vehicle.*")
                             if v.id not in _traffic_actor_ids
-                            and v.attributes.get("role_name") != "trajectory"]
-                sensors = list(world.get_actors().filter("sensor.*"))
-                walkers = list(world.get_actors().filter("walker.*"))
+                            and v.attributes.get("role_name") != "trajectory"
+                            and orphan(v)]
+                sensors = [s for s in world.get_actors().filter("sensor.*") if orphan(s)]
+                walkers = [w for w in world.get_actors().filter("walker.*") if orphan(w)]
                 # Historical props are session-owned and must be gone when no
                 # sessions are active.  Any remaining static prop is orphaned.
                 props = list(world.get_actors().filter("static.prop.*"))
