@@ -542,6 +542,7 @@ class DriveSession:
         self._frame_lock = threading.Lock()
         # Session-owned perception sensors; never shared across browser egos.
         self._perception = PerceptionService()
+        self._perception_wanted = True  # per-session switch, see start(perception=...)
         self._perception_scan_interval_seconds = max(
             0.0, float(perception_scan_interval_seconds)
         )
@@ -656,7 +657,8 @@ class DriveSession:
             if not release_when_done:
                 limiter.release()
 
-    async def start(self, start: str, end: str, vehicle_blueprint: str = DEFAULT_VEHICLE) -> dict:
+    async def start(self, start: str, end: str, vehicle_blueprint: str = DEFAULT_VEHICLE,
+                    perception: Optional[bool] = None) -> dict:
         """Start a driving session: reconstruct scene, spawn vehicle, attach camera.
 
         If any step fails, _force_cleanup() ensures no actors are leaked.
@@ -665,6 +667,8 @@ class DriveSession:
             raise RuntimeError("Session already active")
 
         self._starting = True
+        # Perception stack: server default (DTB_PERCEPTION_ENABLED) unless the client says otherwise.
+        self._perception_wanted = _drive_config().perception_enabled if perception is None else bool(perception)
         try:
             if not any(s.is_active for s in _active_sessions):
                 apply_default_drive_weather(self._world)
@@ -752,10 +756,13 @@ class DriveSession:
             # Attach this session's semantic/depth camera pairs to this ego.
             # Perception is non-critical: control remains usable if a sensor
             # blueprint is unavailable, and cleanup still detaches partial work.
-            try:
-                self._perception.attach(self._world, self.vehicle)
-            except Exception as e:
-                logger.warning("Perception attach failed: %s", e, exc_info=True)
+            if self._perception_wanted:
+                try:
+                    self._perception.attach(self._world, self.vehicle)
+                except Exception as e:
+                    logger.warning("Perception attach failed: %s", e, exc_info=True)
+            else:
+                logger.info("Perception stack disabled for this session (no semantic/depth cameras)")
 
             self._accepting_frames = True
             self._active = True
@@ -778,6 +785,7 @@ class DriveSession:
                 "sensor_actor_ids": sensor_actor_ids,
                 "scene_actor_ids": scene_actor_ids,
                 "ego_role": self._ego_role,
+                "perception": self._perception_wanted,
                 "owned_actor_ids": self.owned_actor_ids(),
             }
         except Exception:
@@ -2515,6 +2523,7 @@ async def handle_message(session: DriveSession, msg: dict, map_controller=None) 
                 start=msg["start"],
                 end=msg["end"],
                 vehicle_blueprint=vehicle_bp,
+                perception=msg.get("perception"),
             )
         elif msg_type == "control":
             return session.apply_control(
