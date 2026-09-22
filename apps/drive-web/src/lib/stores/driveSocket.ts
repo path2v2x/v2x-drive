@@ -666,7 +666,14 @@ export function startSession(start: string, end: string, vehicle?: string): void
 	resetTeleportStatus();
 	sessionState.set('reconstructing');
 	lastError.set(null);
-	send({ type: 'start_session', start, end, vehicle: vehicle ?? 'vehicle.tesla.model3' });
+	// coexist branch: ?perception=off asks the server to skip the 16-sensor perception
+	// stack for this session (cheaper ticks, no on-car detections).
+	const perceptionParam =
+		typeof window === 'undefined'
+			? ''
+			: (new URLSearchParams(window.location.search).get('perception') ?? '').toLowerCase();
+	const perception = ['off', '0', 'false', 'no'].includes(perceptionParam) ? { perception: false } : {};
+	send({ type: 'start_session', start, end, vehicle: vehicle ?? 'vehicle.tesla.model3', ...perception });
 }
 
 export function sendControl(steer: number, throttle: number, brake: number, reverse: boolean = false): void {

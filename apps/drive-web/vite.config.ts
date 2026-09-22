@@ -18,7 +18,7 @@ export default defineConfig(({ mode }) => {
 			proxy: Object.fromEntries(
 				proxiedPrefixes.map((prefix) => [
 					prefix,
-					{ target: proxyTarget, changeOrigin: true, ws: prefix === '/ws' }
+					{ target: proxyTarget, changeOrigin: true, secure: false, ws: prefix === '/ws' }
 				])
 			)
 		}
