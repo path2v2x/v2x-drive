@@ -97,7 +97,6 @@ class TestAsyncSceneStart:
         control_session.vehicle = MockActor(9_001)
         mock_world._actors[control_session.vehicle.id] = control_session.vehicle
         control_session._active = True
-        control_session._perception.scan = lambda: []
         drive_server._active_sessions.append(session)
 
         start_task = asyncio.create_task(

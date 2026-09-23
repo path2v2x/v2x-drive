@@ -95,7 +95,6 @@ class Config:
     TM_OSM_MODE: str = "0"             # "0": OSM mode off (CARLA 0.10.0 default deletes cars at dead ends)
     VOICES_EGO_ROLE: str = ""          # e.g. "PATH-M-1": first session's ego takes this role_name
     KEEP_VOICES_EGO: str = "1"         # "1": a VOICES-role ego survives session end; next session adopts it
-    PERCEPTION_ENABLED: str = "1"      # "0": sessions run without the 16-sensor perception stack (faster ticks)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -136,10 +135,6 @@ class Config:
     @property
     def voices_roles(self) -> tuple:
         return tuple(r.strip() for r in str(self.VOICES_EGO_ROLE or "").split(",") if r.strip())
-
-    @property
-    def perception_enabled(self) -> bool:
-        return _truthy(self.PERCEPTION_ENABLED)
 
     def setup_logging(self) -> None:
         """Configure the root logger based on ``LOG_LEVEL``."""

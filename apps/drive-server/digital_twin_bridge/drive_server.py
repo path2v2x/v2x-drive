@@ -15,7 +15,6 @@ import re
 import time
 import threading
 import weakref
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -25,7 +24,6 @@ from PIL import Image
 
 from digital_twin_bridge.scene_reconstructor import SceneReconstructor
 from digital_twin_bridge.openscenario_runner import list_xosc
-from digital_twin_bridge.perception import PerceptionService
 from digital_twin_bridge.trajectory_player import (
     TrajectoryPlayer,
     list_trajectory_files,
@@ -59,7 +57,6 @@ SCENE_FETCH_MAX_CONCURRENT = 2
 DEFAULT_SCENE_FETCH_TIMEOUT_SECONDS = 20.0
 DEFAULT_SCENE_FETCH_MAX_PAGES = 20
 DEFAULT_SCENE_FETCH_MAX_ITEMS = 10_000
-DEFAULT_PERCEPTION_SCAN_INTERVAL_SECONDS = 0.1
 _scene_fetch_limiters = weakref.WeakKeyDictionary()
 
 
@@ -497,7 +494,6 @@ class DriveSession:
         scene_fetch_timeout_seconds: float = DEFAULT_SCENE_FETCH_TIMEOUT_SECONDS,
         scene_fetch_max_pages: int = DEFAULT_SCENE_FETCH_MAX_PAGES,
         scene_fetch_max_items: int = DEFAULT_SCENE_FETCH_MAX_ITEMS,
-        perception_scan_interval_seconds: float = DEFAULT_PERCEPTION_SCAN_INTERVAL_SECONDS,
     ):
         self._world = world
         self._map = carla_map
@@ -540,19 +536,6 @@ class DriveSession:
         self._camera_sensor = None
         self._latest_frame: Optional[bytes] = None
         self._frame_lock = threading.Lock()
-        # Session-owned perception sensors; never shared across browser egos.
-        self._perception = PerceptionService()
-        self._perception_wanted = True  # per-session switch, see start(perception=...)
-        self._perception_scan_interval_seconds = max(
-            0.0, float(perception_scan_interval_seconds)
-        )
-        self._last_perception_scan_monotonic: Optional[float] = None
-        self._cached_perception_detections: list[dict] = []
-        self._perception_scan_executor: Optional[ThreadPoolExecutor] = None
-        self._perception_scan_future: Optional[Future] = None
-        self._perception_scan_future_generation: Optional[int] = None
-        self._retired_perception_scan_future: Optional[Future] = None
-        self._perception_scan_generation = 0
         self._accepting_frames = False  # Guard against callbacks after stop
         self._placed_objects: list = []  # User-placed objects (actor, blueprint_id, pos)
         self._dynamic_actors: dict[int, DynamicActorMeta] = {}
@@ -657,8 +640,7 @@ class DriveSession:
             if not release_when_done:
                 limiter.release()
 
-    async def start(self, start: str, end: str, vehicle_blueprint: str = DEFAULT_VEHICLE,
-                    perception: Optional[bool] = None) -> dict:
+    async def start(self, start: str, end: str, vehicle_blueprint: str = DEFAULT_VEHICLE) -> dict:
         """Start a driving session: reconstruct scene, spawn vehicle, attach camera.
 
         If any step fails, _force_cleanup() ensures no actors are leaked.
@@ -667,8 +649,6 @@ class DriveSession:
             raise RuntimeError("Session already active")
 
         self._starting = True
-        # Perception stack: server default (DTB_PERCEPTION_ENABLED) unless the client says otherwise.
-        self._perception_wanted = _drive_config().perception_enabled if perception is None else bool(perception)
         try:
             if not any(s.is_active for s in _active_sessions):
                 apply_default_drive_weather(self._world)
@@ -753,23 +733,10 @@ class DriveSession:
             # Attach RGB camera sensor to the vehicle
             self._attach_camera(bp_lib)
 
-            # Attach this session's semantic/depth camera pairs to this ego.
-            # Perception is non-critical: control remains usable if a sensor
-            # blueprint is unavailable, and cleanup still detaches partial work.
-            if self._perception_wanted:
-                try:
-                    self._perception.attach(self._world, self.vehicle)
-                except Exception as e:
-                    logger.warning("Perception attach failed: %s", e, exc_info=True)
-            else:
-                logger.info("Perception stack disabled for this session (no semantic/depth cameras)")
-
             self._accepting_frames = True
             self._active = True
             self._starting = False
             self.active_camera = "chase"
-            self._last_perception_scan_monotonic = None
-            self._cached_perception_detections = []
 
             logger.info(
                 "Drive session started: vehicle=%d, objects=%d",
@@ -785,7 +752,6 @@ class DriveSession:
                 "sensor_actor_ids": sensor_actor_ids,
                 "scene_actor_ids": scene_actor_ids,
                 "ego_role": self._ego_role,
-                "perception": self._perception_wanted,
                 "owned_actor_ids": self.owned_actor_ids(),
             }
         except Exception:
@@ -895,13 +861,12 @@ class DriveSession:
             return self._latest_frame
 
     def sensor_actor_ids(self) -> list[int]:
-        """Return RGB and perception sensor IDs owned by this session."""
+        """Return the sensor IDs owned by this session (the streaming camera)."""
         actor_ids = []
         if self._camera_sensor is not None:
             actor_id = getattr(self._camera_sensor, "id", None)
             if isinstance(actor_id, int):
                 actor_ids.append(actor_id)
-        actor_ids.extend(self._perception.actor_ids())
         return sorted(set(actor_ids))
 
     def owned_actor_ids(self) -> list[int]:
@@ -917,84 +882,6 @@ class DriveSession:
             if isinstance(actor_id, int):
                 actor_ids.add(actor_id)
         return sorted(actor_ids)
-
-    def _scan_perception_at_sensor_cadence(self) -> list[dict]:
-        """Schedule at most one CPU scan and return the latest completed cache.
-
-        Capturing frames and assigning stable IDs stay on the CARLA/event-loop
-        thread.  Only immutable numpy-frame analysis runs in the bounded worker,
-        so dense semantic masks cannot stall control or ``world.tick``.
-        """
-        now = time.monotonic()
-        retired = self._retired_perception_scan_future
-        if retired is not None:
-            if not retired.done():
-                return list(self._cached_perception_detections)
-            try:
-                retired.result()
-            except Exception:
-                pass
-            self._retired_perception_scan_future = None
-
-        future = self._perception_scan_future
-        if future is not None and future.done():
-            generation = self._perception_scan_future_generation
-            self._perception_scan_future = None
-            self._perception_scan_future_generation = None
-            try:
-                analyzed = future.result()
-                if generation == self._perception_scan_generation and self._active:
-                    tracked = self._perception.finalize_scan(analyzed)
-                    self._cached_perception_detections = [
-                        detection.to_dict() for detection in tracked
-                    ]
-            except Exception as e:
-                if generation == self._perception_scan_generation:
-                    logger.warning("Perception scan failed: %s", e, exc_info=True)
-                    self._cached_perception_detections = []
-
-        due = (
-            self._last_perception_scan_monotonic is None
-            or now - self._last_perception_scan_monotonic
-            >= self._perception_scan_interval_seconds
-        )
-        if self._perception_scan_future is None and due:
-            snapshot = self._perception.capture_scan_snapshot()
-            self._last_perception_scan_monotonic = now
-            if snapshot:
-                if self._perception_scan_executor is None:
-                    self._perception_scan_executor = ThreadPoolExecutor(
-                        max_workers=1,
-                        thread_name_prefix=f"v2x-perception-{id(self):x}",
-                    )
-                future = self._perception_scan_executor.submit(
-                    self._perception.analyze_scan_snapshot, snapshot
-                )
-                self._perception_scan_future = future
-                self._perception_scan_future_generation = (
-                    self._perception_scan_generation
-                )
-            else:
-                self._cached_perception_detections = []
-
-        return list(self._cached_perception_detections)
-
-    def _shutdown_perception_scan_worker(self) -> None:
-        """Invalidate queued/results while allowing pure CPU work to wind down."""
-        self._perception_scan_generation += 1
-        future = self._perception_scan_future
-        self._perception_scan_future = None
-        self._perception_scan_future_generation = None
-        if future is not None:
-            cancelled = future.cancel()
-            if not cancelled and not future.done():
-                # Do not start a new generation's worker until this pure CPU
-                # task winds down; this preserves a strict one-worker bound.
-                self._retired_perception_scan_future = future
-        executor = self._perception_scan_executor
-        self._perception_scan_executor = None
-        if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
 
     def apply_control(self, steer: float, throttle: float, brake: float, reverse: bool = False) -> dict:
         """Apply vehicle control and return telemetry."""
@@ -1020,8 +907,6 @@ class DriveSession:
         speed_ms = math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2)
         speed_kmh = speed_ms * 3.6
 
-        detections = self._scan_perception_at_sensor_cadence()
-
         telemetry = {
             "type": "telemetry",
             "speed": round(speed_kmh, 1),
@@ -1041,9 +926,6 @@ class DriveSession:
             "brake": round(brake, 3),
             "nearby_actors": self.get_nearby_actors(),
             "dynamic_actors": self.get_dynamic_actors_snapshot(),
-            # Always include the list so the dashboard can distinguish a
-            # healthy empty scan from the historical missing-payload regression.
-            "detections": detections,
         }
         self._draw_dynamic_actor_geofences()
         eva_alerts = self._check_emergency_vehicle_proximity()
@@ -2339,18 +2221,6 @@ class DriveSession:
         self._active = False
         self._starting = False
 
-        # Invalidate data-only scan work before detaching CARLA sensors.  A
-        # running worker owns only immutable numpy references and cannot call
-        # back into this session after its generation is discarded.
-        self._shutdown_perception_scan_worker()
-
-        # Perception sensors are children of the ego; destroy them before the
-        # parent actor.  ``detach`` is idempotent for partial start failures.
-        try:
-            self._perception.detach()
-        except Exception as e:
-            logger.warning("Perception detach failed: %s", e, exc_info=True)
-
         # Camera sensor: stop and destroy in separate try blocks
         if self._camera_sensor is not None:
             try:
@@ -2407,8 +2277,6 @@ class DriveSession:
             self._reconstructor = None
 
         self._latest_frame = None
-        self._last_perception_scan_monotonic = None
-        self._cached_perception_detections = []
 
     @property
     def is_active(self) -> bool:
@@ -2523,7 +2391,6 @@ async def handle_message(session: DriveSession, msg: dict, map_controller=None) 
                 start=msg["start"],
                 end=msg["end"],
                 vehicle_blueprint=vehicle_bp,
-                perception=msg.get("perception"),
             )
         elif msg_type == "control":
             return session.apply_control(

@@ -118,27 +118,6 @@ export interface ActorGeofenceAlert {
 	distance: number;
 }
 
-export type PerceptionClass =
-	| 'vehicle'
-	| 'pedestrian'
-	| 'cone'
-	| 'traffic_sign'
-	| 'traffic_light';
-
-export type PerceptionAlertLevel = 'none' | 'info' | 'warn' | 'critical';
-
-/** Ego-relative perception record sent as part of drive telemetry. */
-export interface Detection {
-	id: string;
-	class: PerceptionClass;
-	pos: [number, number];
-	distance: number;
-	bbox_dim: [number, number];
-	in_path: boolean;
-	alert: PerceptionAlertLevel;
-	velocity?: [number, number];
-}
-
 export interface VehicleTelemetry {
 	speed: number;
 	gear: number;
@@ -149,7 +128,6 @@ export interface VehicleTelemetry {
 	brake: number;
 	nearby_actors?: NearbyActor[];
 	dynamic_actors?: DynamicActor[];
-	detections?: Detection[];
 }
 
 export type TrafficPreset = 'none' | 'light' | 'medium' | 'heavy' | 'chaos';
