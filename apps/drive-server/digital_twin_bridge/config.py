@@ -91,8 +91,8 @@ class Config:
 
     # coexist branch: sharing the CARLA world with other clients (DT adapter, HIL_Tool)
     PROTECT_FOREIGN_ACTORS: str = "1"  # "1": never destroy actors this server did not create
-    TM_PORT: int = 8100                 # Traffic Manager port for traffic/dynamic actors (DT owns 8000)
-    TM_OSM_MODE: str = "0"             # "0": OSM mode off (CARLA 0.10.0 default deletes cars at dead ends)
+    TM_PORT: int = 8000                 # Traffic Manager port for traffic/dynamic actors; 8100 avoids DT's manual car, pending the traffic hang investigation
+    TM_OSM_MODE: str = "1"             # "0" keeps traffic cars at dead ends instead of deleting them; left on until the traffic hang is understood
     VOICES_EGO_ROLE: str = ""          # e.g. "PATH-M-1": first session's ego takes this role_name
     KEEP_VOICES_EGO: str = "1"         # "1": a VOICES-role ego survives session end; next session adopts it
 
