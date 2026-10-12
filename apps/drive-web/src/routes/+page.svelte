@@ -32,6 +32,14 @@
 			image: '/landing/architecture.webp',
 			external: false,
 			label: 'See the architecture'
+		},
+		{
+			title: 'Demo Videos',
+			blurb: 'Recorded demos from the field station: V2X emergency-vehicle alerts, driver-in-the-loop trials and street-camera detections.',
+			href: '/demo-videos',
+			image: '/landing/demo-videos.webp',
+			external: false,
+			label: 'Watch the demos'
 		}
 	];
 </script>
@@ -50,7 +58,7 @@
 			</div>
 		</div>
 
-		<div class="grid gap-6 md:grid-cols-3">
+		<div class="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
 			{#each cards as card}
 				<a
 					href={card.href}
