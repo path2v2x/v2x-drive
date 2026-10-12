@@ -208,6 +208,12 @@ interface AutoindexEntry {
 }
 
 const DEMO_VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mov', '.m4v'];
+// A still next to a video with the same stem (Street_Camera.mp4 + Street_Camera.jpg) is its poster.
+const DEMO_POSTER_EXTENSIONS = ['.jpg', '.jpeg', '.webp', '.png'];
+
+function fileStem(fileName: string): string {
+	return fileName.replace(/\.[^.]+$/, '');
+}
 
 export function demoVideoTitle(fileName: string): string {
 	const stem = fileName.replace(/\.[^.]+$/, '') || fileName;
@@ -228,6 +234,15 @@ export async function fetchDemoVideos(): Promise<DemoVideo[]> {
 	}
 
 	const entries = (await response.json()) as AutoindexEntry[];
+	const posters = new Map(
+		entries
+			.filter(
+				(entry) =>
+					entry.type === 'file' &&
+					DEMO_POSTER_EXTENSIONS.some((extension) => entry.name.toLowerCase().endsWith(extension))
+			)
+			.map((entry) => [fileStem(entry.name), `${directoryUrl}${encodeURIComponent(entry.name)}`])
+	);
 	return entries
 		.filter(
 			(entry) =>
@@ -238,6 +253,7 @@ export async function fetchDemoVideos(): Promise<DemoVideo[]> {
 			fileName: entry.name,
 			title: demoVideoTitle(entry.name),
 			url: `${directoryUrl}${encodeURIComponent(entry.name)}`,
+			posterUrl: posters.get(fileStem(entry.name)) ?? null,
 			sizeBytes: entry.size ?? 0,
 			lastModified: entry.mtime ? new Date(entry.mtime).toISOString() : null
 		}))
