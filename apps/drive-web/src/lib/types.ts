@@ -76,6 +76,7 @@ export interface DemoVideo {
 	fileName: string;
 	title: string;
 	url: string;
+	posterUrl: string | null;
 	sizeBytes: number;
 	lastModified: string | null;
 }
