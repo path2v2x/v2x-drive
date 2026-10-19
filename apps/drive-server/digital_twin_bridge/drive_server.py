@@ -15,6 +15,7 @@ import re
 import time
 import threading
 import weakref
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -497,10 +498,21 @@ class DriveSession:
         scene_fetch_max_items: int = DEFAULT_SCENE_FETCH_MAX_ITEMS,
         fleet=None,
         slots=None,
+        hud_sensors: bool = True,
     ):
         self._world = world
         self._map = carla_map
         self._api_fetcher = api_fetcher
+        # Driving HUD: IMU + collision sensor on the ego (see _attach_hud_sensors).
+        self._hud_sensors = bool(hud_sensors)
+        self._imu_sensor = None
+        self._collision_sensor = None
+        self._imu_latest: Optional[dict] = None
+        self._collision_events: deque = deque(maxlen=50)
+        self._collision_lock = threading.Lock()
+        self._prev_velocity: Optional[tuple] = None
+        self._prev_velocity_t = 0.0
+        self._last_vehicle_count = 0
         # Server-owned V2X fleet (civilians / ERVs driven by the behaviour models); None = disabled.
         self._fleet = fleet
         # VOICES scenario slots (voices_slots.SlotService): validates a session's scenario role
@@ -759,8 +771,9 @@ class DriveSession:
             except Exception:
                 self._bound_x, self._bound_y, self._bound_z = 2.5, 1.0, 0.8
 
-            # Attach RGB camera sensor to the vehicle
+            # Attach RGB camera sensor to the vehicle, then the HUD's IMU and collision sensors
             self._attach_camera(bp_lib)
+            self._attach_hud_sensors(bp_lib)
 
             self._accepting_frames = True
             self._active = True
@@ -864,6 +877,138 @@ class DriveSession:
         except Exception as e:
             logger.warning("Failed to attach camera sensor: %s", e)
 
+    # ── driving HUD: IMU + collision sensor and the per-frame HUD block ──
+
+    def _attach_hud_sensors(self, bp_lib):
+        """Attach an IMU and a collision sensor to the ego for the HUD lines (pygame style)."""
+        if not self._hud_sensors or self.vehicle is None:
+            return
+        try:
+            import carla
+            imu_bp = bp_lib.find("sensor.other.imu")
+            if imu_bp is not None:
+                try:
+                    imu_bp.set_attribute("sensor_tick", "0.05")
+                except Exception:
+                    pass
+                self._imu_sensor = self._world.spawn_actor(imu_bp, carla.Transform(), attach_to=self.vehicle)
+                self._imu_sensor.listen(self._on_imu)
+            col_bp = bp_lib.find("sensor.other.collision")
+            if col_bp is not None:
+                self._collision_sensor = self._world.spawn_actor(col_bp, carla.Transform(), attach_to=self.vehicle)
+                self._collision_sensor.listen(self._on_collision)
+            logger.info("HUD sensors attached: imu=%s collision=%s",
+                        self._imu_sensor is not None, self._collision_sensor is not None)
+        except ImportError:
+            logger.info("CARLA not available — HUD sensors skipped (mock mode)")
+        except Exception as e:
+            logger.warning("HUD sensors not attached: %s", e)
+
+    def _on_imu(self, measurement):
+        try:
+            a, g = measurement.accelerometer, measurement.gyroscope
+            self._imu_latest = {
+                "accel": (float(a.x), float(a.y), float(a.z)),
+                "gyro": (float(g.x), float(g.y), float(g.z)),
+            }
+        except Exception:
+            pass
+
+    def _on_collision(self, event):
+        try:
+            imp = event.normal_impulse
+            intensity = math.sqrt(imp.x ** 2 + imp.y ** 2 + imp.z ** 2)
+            other = str(getattr(getattr(event, "other_actor", None), "type_id", "") or "")
+        except Exception:
+            return
+        with self._collision_lock:
+            self._collision_events.append((intensity, other))
+
+    def _destroy_hud_sensors(self):
+        for name in ("_imu_sensor", "_collision_sensor"):
+            sensor = getattr(self, name)
+            if sensor is None:
+                continue
+            for step in (sensor.stop, sensor.destroy):
+                try:
+                    step()
+                except Exception as e:
+                    logger.debug("%s %s failed: %s", name, step.__name__, e)
+            setattr(self, name, None)
+        self._imu_latest = None
+        with self._collision_lock:
+            self._collision_events.clear()
+        self._prev_velocity = None
+
+    @staticmethod
+    def _display_name(type_id: str) -> str:
+        """``vehicle.tesla.model3`` -> ``Tesla Model3`` (manual_control.py's get_actor_display_name)."""
+        return " ".join(str(type_id or "").replace("_", ".").title().split(".")[1:])
+
+    def _hud_snapshot(self, transform, velocity) -> dict:
+        """The driving HUD block of the telemetry, in manual_control.py's line order."""
+        from digital_twin_bridge.geo_utils import carla_to_gps
+        from digital_twin_bridge.tick_stats import TICK_STATS
+        hud: dict = {"server_fps": TICK_STATS.fps(), "frame": None, "sim_time": None}
+        try:
+            snap = self._world.get_snapshot()
+            hud["frame"] = int(snap.frame)
+            hud["sim_time"] = round(float(snap.timestamp.elapsed_seconds), 2)
+        except Exception:
+            pass
+        try:
+            hud["speed_limit"] = round(float(self.vehicle.get_speed_limit()), 0)
+        except Exception:
+            hud["speed_limit"] = None
+        hud["compass"] = round((float(transform.rotation.yaw) + 90.0) % 360.0, 1)
+        now = time.monotonic()
+        imu = self._imu_latest
+        if imu is not None:
+            hud["accel"] = [round(v, 2) for v in imu["accel"]]
+            hud["gyro"] = [round(v, 2) for v in imu["gyro"]]
+            hud["imu"] = True
+        else:
+            accel = [0.0, 0.0, 0.0]
+            if self._prev_velocity is not None and now - self._prev_velocity_t > 1e-3:
+                dt = now - self._prev_velocity_t
+                pv = self._prev_velocity
+                accel = [(velocity.x - pv[0]) / dt, (velocity.y - pv[1]) / dt, (velocity.z - pv[2]) / dt]
+            hud["accel"] = [round(a, 2) for a in accel]
+            try:
+                av = self.vehicle.get_angular_velocity()  # deg/s in CARLA
+                hud["gyro"] = [round(math.radians(av.x), 2), round(math.radians(av.y), 2), round(math.radians(av.z), 2)]
+            except Exception:
+                hud["gyro"] = [0.0, 0.0, 0.0]
+            hud["imu"] = False
+        self._prev_velocity = (float(velocity.x), float(velocity.y), float(velocity.z))
+        self._prev_velocity_t = now
+        try:
+            lat, lon = carla_to_gps(self._map, transform.location)
+            hud["gnss"] = [round(float(lat), 6), round(float(lon), 6)]
+        except Exception:
+            hud["gnss"] = None
+        hud["height"] = round(float(transform.location.z), 1)
+        try:
+            ctrl = self.vehicle.get_control()
+            hud["hand_brake"] = bool(getattr(ctrl, "hand_brake", False))
+            hud["manual"] = bool(getattr(ctrl, "manual_gear_shift", False))
+        except Exception:
+            hud["hand_brake"] = False
+            hud["manual"] = False
+        with self._collision_lock:
+            events = list(self._collision_events)
+            self._collision_events.clear()
+        if events:
+            worst = max(events, key=lambda e: e[0])
+            hud["collision"] = {"intensity": round(worst[0], 1), "with": self._display_name(worst[1]) or worst[1],
+                                "count": len(events)}
+        else:
+            hud["collision"] = None
+        hud["vehicles"] = self._last_vehicle_count
+        hud["vehicle"] = self._display_name(getattr(self.vehicle, "type_id", ""))
+        hud["map"] = str(getattr(self._map, "name", "") or "").split("/")[-1]
+        return hud
+
     def _on_camera_frame(self, image):
         """Callback from CARLA camera sensor — encode frame to JPEG."""
         if not self._accepting_frames:
@@ -891,10 +1036,12 @@ class DriveSession:
             return self._latest_frame
 
     def sensor_actor_ids(self) -> list[int]:
-        """Return the sensor IDs owned by this session (the streaming camera)."""
+        """Return the sensor IDs owned by this session (camera, HUD IMU and collision sensor)."""
         actor_ids = []
-        if self._camera_sensor is not None:
-            actor_id = getattr(self._camera_sensor, "id", None)
+        for sensor in (self._camera_sensor, self._imu_sensor, self._collision_sensor):
+            if sensor is None:
+                continue
+            actor_id = getattr(sensor, "id", None)
             if isinstance(actor_id, int):
                 actor_ids.append(actor_id)
         return sorted(set(actor_ids))
@@ -957,6 +1104,10 @@ class DriveSession:
             "nearby_actors": self.get_nearby_actors(),
             "dynamic_actors": self.get_dynamic_actors_snapshot(),
         }
+        try:
+            telemetry["hud"] = self._hud_snapshot(transform, velocity)
+        except Exception as e:
+            logger.debug("HUD snapshot failed: %s", e)
         if self._fleet is not None and self._fleet.has_vehicles:
             telemetry["v2x_fleet"] = self._fleet.compact_list()
         self._draw_dynamic_actor_geofences()
@@ -2013,8 +2164,10 @@ class DriveSession:
 
         player_loc = self.vehicle.get_transform().location
         actors = []
+        count = 0
 
         for a in self._world.get_actors().filter("vehicle.*"):
+            count += 1
             if a.id == self.vehicle.id:
                 continue
             t = a.get_transform()
@@ -2027,8 +2180,10 @@ class DriveSession:
                 "pos": [round(t.location.x, 2), round(t.location.y, 2)],
                 "yaw": round(t.rotation.yaw, 1),
                 "type": self._actor_kind(a.id),
+                "type_id": str(getattr(a, "type_id", "") or ""),
             })
 
+        self._last_vehicle_count = count
         return actors
 
     def set_weather(self, params: dict) -> dict:
@@ -2271,6 +2426,7 @@ class DriveSession:
             except Exception as e:
                 logger.warning("Camera destroy failed: %s", e)
             self._camera_sensor = None
+        self._destroy_hud_sensors()
 
         # Vehicle
         if self.vehicle is not None:
@@ -2641,6 +2797,7 @@ async def serve_drive(
     v2x=None,
     fleet=None,
     slots=None,
+    hud_sensors: bool = True,
 ):
     """
     Handle a single WebSocket connection for driving.
@@ -2681,6 +2838,7 @@ async def serve_drive(
         scene_fetch_max_items=scene_fetch_max_items,
         fleet=fleet,
         slots=slots,
+        hud_sensors=hud_sensors,
     )
     frame_task = None
     frame_stop = asyncio.Event()

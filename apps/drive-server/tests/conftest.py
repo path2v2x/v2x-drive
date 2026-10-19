@@ -238,6 +238,8 @@ class MockBlueprintLibrary:
             "static.prop.trafficcone01": MockBlueprint("static.prop.trafficcone01"),
             "static.prop.trafficwarning": MockBlueprint("static.prop.trafficwarning"),
             "sensor.camera.rgb": MockBlueprint("sensor.camera.rgb"),
+            "sensor.other.imu": MockBlueprint("sensor.other.imu"),
+            "sensor.other.collision": MockBlueprint("sensor.other.collision"),
         }
 
     def filter(self, pattern: str) -> list[MockBlueprint]:
@@ -363,6 +365,13 @@ class MockWorld:
     def tick(self) -> int:
         self._tick_count += 1
         return self._tick_count
+
+    def get_snapshot(self):
+        """Frame counter and sim time, like carla.WorldSnapshot (20 Hz fixed step)."""
+        return types.SimpleNamespace(
+            frame=self._tick_count,
+            timestamp=types.SimpleNamespace(elapsed_seconds=self._tick_count * 0.05),
+        )
 
     def ground_projection(self, location, search_distance=10.0):
         """Mock ground projection — just return the location with z=0."""

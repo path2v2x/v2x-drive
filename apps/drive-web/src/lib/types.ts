@@ -130,6 +130,26 @@ export interface ActorGeofenceAlert {
 	distance: number;
 }
 
+/** Driving HUD block (manual_control.py's line order); every field may be missing on old servers. */
+export interface HudTelemetry {
+	server_fps: number;
+	frame: number | null;
+	sim_time: number | null;
+	speed_limit: number | null;
+	compass: number;
+	accel: [number, number, number];
+	gyro: [number, number, number];
+	imu: boolean;
+	gnss: [number, number] | null;
+	height: number;
+	hand_brake: boolean;
+	manual: boolean;
+	collision: { intensity: number; with: string; count: number } | null;
+	vehicles: number;
+	vehicle: string;
+	map: string;
+}
+
 export interface VehicleTelemetry {
 	speed: number;
 	gear: number;
@@ -141,6 +161,20 @@ export interface VehicleTelemetry {
 	nearby_actors?: NearbyActor[];
 	dynamic_actors?: DynamicActor[];
 	v2x_fleet?: V2xFleetCompact[];
+	hud?: HudTelemetry;
+}
+
+/** One button of a driving-view side rail (see SideRail.svelte). */
+export interface RailItem {
+	id: string;
+	label: string;
+	title?: string;
+	/** SVG path data (24x24 viewBox, stroked); a short text badge is used when empty */
+	icon?: string;
+	text?: string;
+	active?: boolean;
+	tone?: 'default' | 'info' | 'warn' | 'danger' | 'ok';
+	onClick: () => void;
 }
 
 export type TrafficPreset = 'none' | 'light' | 'medium' | 'heavy' | 'chaos';

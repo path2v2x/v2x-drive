@@ -15,9 +15,11 @@
 		originLat: number;
 		originLon: number;
 		fullPanel?: boolean;
+		/** where the floating mini-map sits over the camera (the driving HUD takes the top-left) */
+		corner?: 'top-left' | 'bottom-right';
 	}
 
-	let { roadLines, originLat, originLon, fullPanel = false }: Props = $props();
+	let { roadLines, originLat, originLon, fullPanel = false, corner = 'top-left' }: Props = $props();
 
 	let mapContainer: HTMLDivElement;
 	let map: maplibregl.Map | null = null;
@@ -306,7 +308,7 @@
 <div
 	class={fullPanel
 		? 'relative h-full w-full'
-		: 'absolute left-3 top-3 z-30 overflow-hidden rounded-lg border border-gray-700/60 bg-gray-900/80 shadow-xl backdrop-blur-sm transition-all duration-200'}
+		: `absolute ${corner === 'bottom-right' ? 'right-3 bottom-3' : 'left-3 top-3'} z-30 overflow-hidden rounded-lg border border-gray-700/60 bg-gray-900/80 shadow-xl backdrop-blur-sm transition-all duration-200`}
 	style={fullPanel ? '' : `width: ${expanded ? 400 : 220}px; height: ${expanded ? 300 : 160}px;`}
 	onclick={() => { if (!fullPanel) { expanded = !expanded; setTimeout(() => map?.resize(), 210); } }}
 >

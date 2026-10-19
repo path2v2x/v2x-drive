@@ -83,6 +83,19 @@ export const voicesSlotsInfo = writable<{ available: boolean; default: string; l
 });
 /** Scenario slot the current session's ego publishes under ('' = none). */
 export const egoVoicesRole = writable<string>('');
+/** Camera frames received per second (the driving HUD's "Client FPS" line). */
+export const clientFps = writable<number>(0);
+let frameCount = 0;
+let fpsTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopFpsCounter(): void {
+	if (fpsTimer) {
+		clearInterval(fpsTimer);
+		fpsTimer = null;
+	}
+	frameCount = 0;
+	clientFps.set(0);
+}
 export const teleportStatus = writable<TeleportStatus>({
 	state: 'idle',
 	message: null,
@@ -319,6 +332,11 @@ export function connect(wsUrl: string): void {
 		if (ws !== socket) return;
 		recordWire('EVT', 'evt', 'open', `connection OPEN → ${wsUrl}`);
 		driveConnected.set(true);
+		stopFpsCounter();
+		fpsTimer = setInterval(() => {
+			clientFps.set(frameCount);
+			frameCount = 0;
+		}, 1000);
 		console.log('[DriveWS] Connected');
 	};
 
@@ -326,6 +344,7 @@ export function connect(wsUrl: string): void {
 		if (ws !== socket) return;
 		// Binary message = JPEG camera frame
 		if (event.data instanceof Blob) {
+			frameCount += 1;
 			recordWire('RX', 'bin', 'frame', '[binary JPEG camera frame]', event.data.size);
 			if (onFrameCallback) {
 				onFrameCallback(event.data);
@@ -356,6 +375,7 @@ export function connect(wsUrl: string): void {
 		recordWire('EVT', 'evt', 'close', 'connection CLOSED');
 		ws = null;
 		driveConnected.set(false);
+		stopFpsCounter();
 		runDisconnectHooks();
 		console.log('[DriveWS] Disconnected');
 		if (get(teleportStatus).state === 'pending') {
@@ -392,6 +412,7 @@ export function disconnect(): void {
 		socket.close();
 	}
 	driveConnected.set(false);
+	stopFpsCounter();
 	runDisconnectHooks();
 	sessionState.set('idle');
 	vehicleId.set(null);

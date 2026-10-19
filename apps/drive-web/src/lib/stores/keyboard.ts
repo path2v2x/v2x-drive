@@ -13,6 +13,7 @@
 
 import { writable } from 'svelte/store';
 import type { NormalizedInput } from './gamepad';
+import { isTypingTarget } from '$lib/inputGate';
 
 export const keyboardActive = writable<boolean>(false);
 
@@ -42,7 +43,7 @@ export const keyboardInput = writable<NormalizedInput>({
 });
 
 function onKeyDown(e: KeyboardEvent) {
-	if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+	if (isTypingTarget(e.target)) return;
 
 	const key = e.key.toLowerCase();
 	if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) {

@@ -36,6 +36,7 @@ from digital_twin_bridge.carla_connection import CarlaConnection, drive_map_stat
 from digital_twin_bridge.detections_api import make_history_fetcher
 from digital_twin_bridge.drive_server import serve_drive, active_session_count, session_ego_ids
 from digital_twin_bridge.actor_ownership import is_drive_owned  # coexist branch
+from digital_twin_bridge.tick_stats import TICK_STATS
 from digital_twin_bridge.object_registry import ObjectRegistry
 from digital_twin_bridge.publisher import StatePublisher
 from digital_twin_bridge.trajectory_player import TrajectoryPlayer
@@ -700,6 +701,7 @@ async def main():
             v2x=runtime.get("v2x"),
             fleet=runtime.get("fleet"),
             slots=runtime.get("slots"),
+            hud_sensors=config.hud_sensors,
         )
 
     async def tick_loop():
@@ -745,6 +747,7 @@ async def main():
                 logger.warning("world.tick() failed: %s", e)
                 await asyncio.sleep(target_dt)
                 continue
+            TICK_STATS.mark()
             try:
                 trajectory_player.tick()
             except Exception as e:

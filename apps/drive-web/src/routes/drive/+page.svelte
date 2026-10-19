@@ -61,12 +61,17 @@
 		undoPlace,
 		undoV2xSignal,
 		setOnFrame,
+		clientFps,
 		setDriveMap,
 	} from '$lib/stores/driveSocket';
 
 	import CalibrationWizard from '$lib/components/CalibrationWizard.svelte';
 	import CameraViewComponent from '$lib/components/CameraView.svelte';
 	import HudOverlay from '$lib/components/HudOverlay.svelte';
+	import DrivingHud from '$lib/components/DrivingHud.svelte';
+	import SideRail from '$lib/components/SideRail.svelte';
+	import type { RailItem } from '$lib/types';
+	import { isTypingTarget } from '$lib/inputGate';
 	import V2xToast from '$lib/components/V2xToast.svelte';
 	import V2xSignalPlacer from '$lib/components/V2xSignalPlacer.svelte';
 	import V2xZoneEditor from '$lib/components/V2xZoneEditor.svelte';
@@ -144,6 +149,15 @@
 	let showTeleportPanel = $state(false);
 	let showPacketPanel = $state(false);
 	let showFleetPanel = $state(false);
+	// Driving HUD: the pygame-style column with side rails (default) or the classic overlay (?hud=classic).
+	let hudMode = $state<'pygame' | 'classic'>('pygame');
+	let hudVisible = $state(true);
+	$effect(() => {
+		if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('hud') === 'classic') {
+			hudMode = 'classic';
+		}
+	});
+	let hudWidth = $derived(hudMode === 'pygame' && hudVisible ? '300px' : '0px');
 	let showXoscPicker = $state(false);
 
 	// Split-panel width for the right-side map (px). Persisted in localStorage.
@@ -471,6 +485,70 @@
 		switchCamera(view);
 	}
 
+	// ── side rails (pygame HUD mode) ──
+	const RAIL_ICONS = {
+		weather: 'M6.5 19a4.5 4.5 0 0 1-.4-8.98A6 6 0 0 1 17.7 8.1 4 4 0 0 1 18 19H6.5z',
+		traffic: 'M3 13l1.5-5h15L21 13v6h-2v-2H5v2H3v-6zm2.2 0h13.6l-1-3.5H6.2L5.2 13zM7 17a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm10 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z',
+		camera: 'M4 7h3l2-2h6l2 2h3v12H4V7zm8 3a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z',
+		trajectory: 'M4 18c6 0 4-12 10-12 4 0 4 6 6 6M4 18a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z',
+		teleport: 'M12 21s-6-5.3-6-10a6 6 0 1 1 12 0c0 4.7-6 10-6 10zm0-7.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z',
+		packets: 'M4 6h16M4 12h16M4 18h10',
+		v2x: 'M12 12a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm-4.2 3.2a6 6 0 0 1 0-8.4M16.2 6.8a6 6 0 0 1 0 8.4M5 18a10 10 0 0 1 0-14M19 4a10 10 0 0 1 0 14',
+		fleet: 'M4 6h16v12H4zM12 8v8M8 12h8',
+		scenarios: 'M8 5v14l11-7L8 5z',
+		map: 'M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2V6zm6-2v14m6-12v14',
+		clear: 'M5 7h14M9 7V4h6v3m-7 4v6m4-6v6M6 7l1 13h10l1-13',
+		respawn: 'M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5',
+		end: 'M12 3v9m6.4-6.4a9 9 0 1 1-12.8 0',
+		calibrate: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0-5v3m0 12v3M3 12h3m12 0h3'
+	};
+	type PanelName = 'weather' | 'traffic' | 'camera' | 'trajectory' | 'teleport' | 'fleet';
+	function togglePanel(name: PanelName) {
+		const open = {
+			weather: showWeatherPanel,
+			traffic: showTrafficPanel,
+			camera: showCameraPanel,
+			trajectory: showTrajectoryPanel,
+			teleport: showTeleportPanel,
+			fleet: showFleetPanel
+		}[name];
+		showWeatherPanel = name === 'weather' && !open;
+		showTrafficPanel = name === 'traffic' && !open;
+		showCameraPanel = name === 'camera' && !open;
+		showTrajectoryPanel = name === 'trajectory' && !open;
+		showTeleportPanel = name === 'teleport' && !open;
+		showFleetPanel = name === 'fleet' && !open;
+	}
+	let leftRail: RailItem[] = $derived([
+		{ id: 'weather', label: 'Weather', icon: RAIL_ICONS.weather, active: showWeatherPanel, tone: 'info', onClick: () => togglePanel('weather') },
+		{ id: 'traffic', label: 'Traffic', icon: RAIL_ICONS.traffic, active: showTrafficPanel, tone: 'warn', onClick: () => togglePanel('traffic') },
+		{ id: 'camera', label: 'Camera settings', icon: RAIL_ICONS.camera, active: showCameraPanel, tone: 'info', onClick: () => togglePanel('camera') },
+		{ id: 'trajectory', label: 'Trajectory', icon: RAIL_ICONS.trajectory, active: showTrajectoryPanel, tone: 'info', onClick: () => togglePanel('trajectory') },
+		{ id: 'teleport', label: 'Teleport', title: "Teleport this session's ego to a coordinate", icon: RAIL_ICONS.teleport, active: showTeleportPanel, tone: 'ok', onClick: () => togglePanel('teleport') },
+		{ id: 'packets', label: 'Packets', title: 'Live WebSocket wire log', icon: RAIL_ICONS.packets, active: showPacketPanel, tone: 'info', onClick: () => { showPacketPanel = !showPacketPanel; } },
+		{ id: 'v2x', label: 'V2X messages', title: 'V2X message viewer (TENA feed)', icon: RAIL_ICONS.v2x, active: $v2xViewerOpen, tone: 'info', onClick: toggleV2xViewer },
+		{ id: 'fleet', label: 'Fleet', title: 'V2X fleet: emergency vehicles and civilians that react to V2X messages', icon: RAIL_ICONS.fleet, active: showFleetPanel, tone: 'danger', onClick: () => togglePanel('fleet') },
+		{ id: 'scenarios', label: 'Scenarios', title: 'OpenSCENARIO (X)', icon: RAIL_ICONS.scenarios, active: showXoscPicker, tone: 'info', onClick: () => { showXoscPicker = !showXoscPicker; showTeleportPanel = false; } },
+		{ id: 'map', label: mapMode === 'overlay' ? 'Map: full panel' : 'Map: floating', title: 'Toggle map: full panel / floating overlay', icon: RAIL_ICONS.map, active: mapMode === 'panel', onClick: toggleMapMode }
+	]);
+	let rightRailViews: RailItem[] = $derived(
+		(['chase', 'hood', 'bird', 'free'] as CameraView[]).map((view) => ({
+			id: `view-${view}`,
+			label: `${view[0].toUpperCase()}${view.slice(1)} camera (Tab cycles)`,
+			text: view.toUpperCase(),
+			active: activeCamera === view,
+			onClick: () => handleCameraSwitch(view)
+		}))
+	);
+	let rightRailActions: RailItem[] = $derived([
+		...(inputMode === 'wheel' && gamepad
+			? [{ id: 'calibrate', label: 'Calibrate wheel', icon: RAIL_ICONS.calibrate, onClick: () => { showCalibration = true; } } as RailItem]
+			: []),
+		{ id: 'clear', label: 'Clear NPCs', title: 'Delete all non-ego vehicles (traffic, scenario actors, trajectory playback, placed cars)', icon: RAIL_ICONS.clear, tone: 'warn', onClick: () => clearNonEgoVehicles() },
+		{ id: 'respawn', label: 'Respawn', icon: RAIL_ICONS.respawn, tone: 'info', onClick: () => respawnVehicle() },
+		{ id: 'end', label: 'End session', icon: RAIL_ICONS.end, tone: 'danger', onClick: handleEndSession }
+	]);
+
 	function handleCalibrationComplete() {
 		showCalibration = false;
 	}
@@ -528,7 +606,17 @@
 	});
 
 	function handleKeydown(e: KeyboardEvent) {
-		if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+		if (isTypingTarget(e.target)) return;
+		if (e.key === 'Tab' && driveState === 'driving') {
+			e.preventDefault(); // cycle the camera: chase -> hood -> bird -> free
+			const order: CameraView[] = ['chase', 'hood', 'bird', 'free'];
+			handleCameraSwitch(order[(order.indexOf(activeCamera) + 1) % order.length]);
+			return;
+		}
+		if ((e.key === 'h' || e.key === 'H') && driveState === 'driving' && hudMode === 'pygame') {
+			hudVisible = !hudVisible;
+			return;
+		}
 		if (e.key === 'Escape' && closeTopV2xWindow()) return; // the top V2X window closes first
 		if (e.key === 'Escape') {
 			if (showObjectPlacer) {
@@ -577,7 +665,7 @@
 	<ScenarioPicker onclose={() => { showXoscPicker = false; }} />
 {/if}
 
-<div class="h-screen w-screen bg-black relative overflow-hidden">
+<div class="h-screen w-screen bg-black relative overflow-hidden" style="--hud-w: {driveState === 'driving' ? hudWidth : '0px'}">
 	<!-- Lobby: top-left corner (nothing else lives there). Driving HUD: the
 	     top-left is the map toggle, so the link moves to the top-center pill. -->
 	<a
@@ -896,7 +984,11 @@
 				/>
 				<!-- Classic on-camera HUD (throttle/brake bars, speed, steering dot) —
 				     reverted to the pre-dashboard-overhaul look by user request. -->
-				<HudOverlay telemetry={currentTelemetry} isRecording={true} />
+				{#if hudMode === 'classic'}
+					<HudOverlay telemetry={currentTelemetry} isRecording={true} />
+				{:else if hudVisible}
+					<DrivingHud telemetry={currentTelemetry} clientFps={$clientFps} {inputMode} {connected} />
+				{/if}
 
 				{#if mapMode === 'overlay' && mapData}
 					<DriveMiniMap
@@ -904,12 +996,14 @@
 						originLat={mapData.geo_ref.origin_lat}
 						originLon={mapData.geo_ref.origin_lon}
 						fullPanel={false}
+						corner={hudMode === 'pygame' ? 'bottom-right' : 'top-left'}
 					/>
 				{/if}
 
 				<!-- V2X toast notifications -->
 				<V2xToast />
 
+				{#if hudMode === 'classic'}
 				<!-- Camera switcher (top-right) -->
 				<div class="absolute top-4 right-4 z-20 flex items-center gap-0.5 bg-black/40 backdrop-blur-md rounded-xl border border-white/10 p-1 shadow-lg pointer-events-auto">
 					{#each [{ id: 'chase', label: 'Chase' }, { id: 'hood', label: 'Hood' }, { id: 'bird', label: 'Bird' }, { id: 'free', label: 'Free' }] as view}
@@ -1042,6 +1136,18 @@
 					</button>
 				</div>
 
+				{:else}
+					<SideRail side="left" items={leftRail} />
+					<SideRail
+						side="right"
+						items={rightRailViews}
+						actions={rightRailActions}
+						footer={activeCamera === 'bird' && $birdAltitude !== null ? `ALT ${Math.round($birdAltitude)}m` : ''}
+					/>
+				{/if}
+
+				<!-- Panels anchored to the left edge sit right of the HUD column (--hud-w) -->
+				<div class="absolute inset-y-0 right-0 pointer-events-none [&>*]:pointer-events-auto" style="left: var(--hud-w, 0px)">
 				<!-- V2X Signal Placer Panel -->
 				{#if showV2xPlacer}
 					<V2xSignalPlacer onClose={() => { showV2xPlacer = false; }} />
@@ -1082,6 +1188,7 @@
 					/>
 				{/if}
 
+				</div>
 			</div>
 
 			<!-- Draggable divider -->
@@ -1124,7 +1231,7 @@
 
 		<!-- Object Placer Panel — slide-in from bottom-left -->
 		{#if showObjectPlacer}
-			<div class="absolute bottom-16 left-2 z-30 w-72 max-h-[30rem] bg-gray-900/95 border border-gray-700 rounded-xl overflow-hidden pointer-events-auto flex flex-col">
+			<div class="absolute bottom-16 left-2 z-30 w-72 max-h-[30rem] bg-gray-900/95 border border-gray-700 rounded-xl overflow-hidden pointer-events-auto flex flex-col" style="left: calc(var(--hud-w, 0px) + 0.5rem)">
 				<div class="p-2 border-b border-gray-700 space-y-2">
 					<div class="flex items-center gap-2">
 						<input

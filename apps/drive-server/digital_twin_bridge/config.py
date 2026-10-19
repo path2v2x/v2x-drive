@@ -86,6 +86,11 @@ class Config:
     # on the ego's browser. Only fires when the EVA is closing on the ego.
     EVA_WARNING_DISTANCE_M: float = 20.0
 
+    # Driving HUD: an IMU and a collision sensor on the ego feed the accelerometer,
+    # gyroscope and collision lines. "0" keeps the camera as the only sensor; the
+    # HUD then derives acceleration from the velocity and shows no collisions.
+    HUD_SENSORS: str = "1"
+
     # Logging
     LOG_LEVEL: str = "INFO"
 
@@ -176,6 +181,10 @@ class Config:
     @property
     def fleet_enabled(self) -> bool:
         return _truthy(self.FLEET_ENABLED)
+
+    @property
+    def hud_sensors(self) -> bool:
+        return _truthy(self.HUD_SENSORS)
 
     @property
     def fleet_erv_sources(self) -> frozenset:
