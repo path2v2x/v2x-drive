@@ -16,3 +16,12 @@ export function carlaToGps(
 		originLon + x / (METERS_PER_DEGREE * Math.cos((originLat * Math.PI) / 180));
 	return [lon, lat];
 }
+
+/**
+ * CARLA yaw (degrees, 0 = +x = east, 90 = +y = south) to a map bearing
+ * (degrees clockwise from north, as MapLibre uses it). The mini-map and the
+ * teleport map both turn by this so that "up" is the car's heading.
+ */
+export function carlaYawToBearing(yawDeg: number): number {
+	return (((yawDeg + 90) % 360) + 360) % 360;
+}

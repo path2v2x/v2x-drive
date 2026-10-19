@@ -2,7 +2,7 @@
 	import { onDestroy } from 'svelte';
 	import maplibregl from 'maplibre-gl';
 	import { MAP_CENTER, DEFAULT_ZOOM, MAP_STYLE_URL } from '$lib/constants';
-	import { carlaToGps } from '$lib/geo';
+	import { carlaToGps, carlaYawToBearing } from '$lib/geo';
 	import {
 		driveConnected,
 		resetTeleportStatus,
@@ -84,12 +84,31 @@
 	let mapClickNote = $state('');
 	let frameCount = 0;
 
+	// The map turns with the car (heading-up, like the mini-map), so the arrow, which
+	// always points up, shows the real direction of travel. The turn happens about the
+	// car rather than the map centre, so a pan the user made is kept, and it pauses
+	// while the user drags.
+	let userDragging = false;
+	let lastBearing: number | null = null;
+
+	function rotateToHeading(yawDeg: number, carLngLat: [number, number]) {
+		if (!map || userDragging) return;
+		const bearing = carlaYawToBearing(yawDeg);
+		if (lastBearing !== null && Math.abs(((bearing - lastBearing + 540) % 360) - 180) < 0.5) return;
+		lastBearing = bearing;
+		const before = map.project(carLngLat);
+		map.setBearing(bearing);
+		const after = map.project(carLngLat);
+		map.panBy([after.x - before.x, after.y - before.y], { duration: 0 });
+	}
+
 	function centerOnCar() {
 		if (!map || !hasGeoRef) return;
 		const t = $telemetry;
 		if (t?.pos && (t.pos[0] !== 0 || t.pos[1] !== 0)) {
 			const [lon, lat] = carlaToGps(t.pos[0], t.pos[1], originLat!, originLon!);
-			map.jumpTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), DEFAULT_ZOOM + 1) });
+			lastBearing = carlaYawToBearing(t.rot[1]);
+			map.jumpTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), DEFAULT_ZOOM + 1), bearing: lastBearing });
 		}
 	}
 
@@ -166,7 +185,7 @@
 			</svg>`;
 			el.style.width = '20px';
 			el.style.height = '20px';
-			carMarker = new maplibregl.Marker({ element: el })
+			carMarker = new maplibregl.Marker({ element: el, rotationAlignment: 'viewport' })
 				.setLngLat([originLon ?? MAP_CENTER.lon, originLat ?? MAP_CENTER.lat])
 				.addTo(map);
 
@@ -174,12 +193,33 @@
 		});
 
 		map.on('click', handleMapClick);
+		map.on('dragstart', () => {
+			userDragging = true;
+		});
+		map.on('dragend', () => {
+			userDragging = false;
+		});
 	}
 
-	// Create the map when its container mounts (Map tab active).
+	function teardownMap() {
+		carMarker?.remove();
+		targetMarker?.remove();
+		map?.remove();
+		carMarker = null;
+		targetMarker = null;
+		map = null;
+		mapReady = false;
+		lastBearing = null;
+	}
+
+	// Create the map when its container mounts (Map tab active) and drop it when the
+	// tab goes away: the container is destroyed with the tab, so the old map instance
+	// would otherwise come back blank on the next switch to Map.
 	$effect(() => {
 		if (mode === 'map' && mapContainer && !map) {
 			initMap(mapContainer);
+		} else if (mode !== 'map' && map) {
+			teardownMap();
 		}
 	});
 
@@ -191,13 +231,11 @@
 		if (frameCount % 4 !== 0) return;
 		const [lon, lat] = carlaToGps(t.pos[0], t.pos[1], originLat!, originLon!);
 		carMarker.setLngLat([lon, lat]);
+		rotateToHeading(t.rot[1], [lon, lat]);
 	});
 
 	onDestroy(() => {
-		carMarker?.remove();
-		targetMarker?.remove();
-		map?.remove();
-		map = null;
+		teardownMap();
 	});
 </script>
 
@@ -242,7 +280,7 @@
 			<div bind:this={mapContainer} class="h-64 w-full"></div>
 			<div class="flex items-center justify-between gap-2 border-t border-gray-800 px-3 py-2 text-xs">
 				<span class="text-gray-400">
-					{sessionActive ? 'Click the map to teleport the car there.' : 'Start a drive session first.'}
+					{sessionActive ? 'Click the map to teleport there. Up is the way you face.' : 'Start a drive session first.'}
 				</span>
 				<button
 					type="button"

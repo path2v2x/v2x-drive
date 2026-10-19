@@ -5,6 +5,7 @@
 	import { dynamicActors, telemetry } from '$lib/stores/driveSocket';
 	import { v2xZones } from '$lib/stores/v2xZones';
 	import { carlaToGps } from '$lib/stores/v2xZones';
+	import { carlaYawToBearing } from '$lib/geo';
 	import { shouldDrawZone } from '$lib/zoneRules';
 	import { buildActorGeofencePolygon, DYNAMIC_GEOFENCE_COLOR } from '$lib/actorGeofenceRules';
 	import type { DynamicActor, V2xZone } from '$lib/types';
@@ -227,7 +228,7 @@
 		// map rotates underneath so "up" = forward.
 		// MapLibre bearing = clockwise from north. We set bearing to the car's
 		// heading so north rotates and the car's forward is always screen-up.
-		const heading = t.rot[1] + 90; // CARLA yaw to map bearing
+		const heading = carlaYawToBearing(t.rot[1]);
 		carMarker.setRotation(0);
 		map.jumpTo({ center: [lon, lat], bearing: heading });
 
