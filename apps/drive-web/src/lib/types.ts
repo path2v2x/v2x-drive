@@ -642,3 +642,18 @@ export interface V2xFleetEvent extends DriveMessage {
 	reason: string;
 	t: number;
 }
+
+/** Background-traffic script control (the SUMO bridge on RFS), polled by the editor. */
+export interface BgTrafficStatus extends DriveMessage {
+	type: 'bg_traffic';
+	available: boolean;
+	label: string;
+	state: 'unavailable' | 'stopped' | 'starting' | 'running' | 'stopping';
+	running: boolean;
+	since?: number | null;
+	uptime_s?: number | null;
+	last_start?: { at: number; ok: boolean; code: number; output: string } | null;
+	last_stop?: { at: number; ok: boolean; code: number; output: string } | null;
+	last_line?: string;
+	error?: string;
+}

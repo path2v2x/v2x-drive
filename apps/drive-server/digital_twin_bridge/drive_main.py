@@ -468,6 +468,16 @@ async def main():
     )
     runtime["slots"] = slots
 
+    # ── Background traffic (the SUMO bridge on RFS): the editor starts and stops it ──
+    from digital_twin_bridge.bg_traffic import BackgroundTraffic
+    bg_traffic = BackgroundTraffic(
+        start_cmd=config.BG_TRAFFIC_START, stop_cmd=config.BG_TRAFFIC_STOP, probe_cmd=config.BG_TRAFFIC_PROBE,
+        tail_cmd=config.BG_TRAFFIC_TAIL, requires=config.BG_TRAFFIC_REQUIRES, label=config.BG_TRAFFIC_LABEL,
+    )
+    runtime["bg_traffic"] = bg_traffic
+    logger.info("Background traffic control: %s",
+                ("available (%s)" % config.BG_TRAFFIC_REQUIRES) if bg_traffic.available else "unavailable")
+
     # ── V2X-reactive driving models: a server-owned fleet of civilians and ERVs ──
     fleet = None
     if config.fleet_enabled:
@@ -702,6 +712,7 @@ async def main():
             fleet=runtime.get("fleet"),
             slots=runtime.get("slots"),
             hud_sensors=config.hud_sensors,
+            bg_traffic=runtime.get("bg_traffic"),
         )
 
     async def tick_loop():

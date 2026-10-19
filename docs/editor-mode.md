@@ -32,6 +32,20 @@ the name, the role name and the distance from the camera. One click selects
 (details load on the left), a double click focuses. The list is polled once a
 second, capped at 400 rows.
 
+## Background traffic
+
+The right column has a "Background traffic" block when the server is configured
+for it (on RFS: the SUMO bridge, `~/sumo-bg/run-sumo-bg.sh`, running as the
+docker container `sumo-bg`). It shows whether the script runs and for how long,
+its last log line (`~/sumo-bg/logs/bridge.log`), and a Start / Stop button. Stop asks the bridge to park its
+slot cars (PATH-BG-1..4) off the road and exit; Start brings it back and the
+bridge adopts the same cars, so the DT adapter keeps publishing them and no DT
+restart is needed (the adapter binds a name once per session). Server side:
+`bg_traffic.py` runs four shell commands from `DTB_BG_TRAFFIC_START`, `_STOP`,
+`_PROBE` and `_TAIL`, offered while `DTB_BG_TRAFFIC_REQUIRES` (the script)
+exists; the drive server itself never touches the cars. The status is polled
+every 3 s.
+
 ## Protocol (drive WebSocket)
 
 | Client → server | Server → client |
@@ -43,6 +57,7 @@ second, capped at 400 rows.
 | `list_world_actors {max}` | `world_actors {actors[], total, truncated, groups, following}` |
 | `inspect_actor {actor_id}` | `actor_details {…row, attributes, bbox, velocity, rot, control?, lights?, speed_limit?, parent_type}` |
 | `start_session {…, spawn: {x, y, yaw}}` (driving) | the car spawns on the lane nearest to that point (an adopted slot car is moved there) |
+| `bg_traffic_status` / `bg_traffic_start` / `bg_traffic_stop` | `bg_traffic {available, label, state: unavailable\|stopped\|starting\|running\|stopping, running, since, uptime_s, last_start, last_stop, last_line, error?}` |
 
 Car-only actions (`control`, `teleport`, `respawn`, `camera_switch`,
 `camera_zoom`) answer `error {code: "needs_vehicle"}` in an editor session.
@@ -61,5 +76,6 @@ capped by `DTB_EDITOR_MAX_SESSIONS` (2): each one is a full UE5 scene render.
 ## Verification
 
 * `cd apps/drive-server && python -m pytest` (`test_editor_camera`,
-  `test_world_outliner`, `test_editor_session`).
-* `cd apps/drive-web && npm run check && npm test` (`fly-input`, `editor-protocol`).
+  `test_world_outliner`, `test_editor_session`, `test_bg_traffic`).
+* `cd apps/drive-web && npm run check && npm test` (`fly-input`, `editor-protocol`,
+  `bg-traffic-protocol`).

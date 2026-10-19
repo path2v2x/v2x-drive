@@ -161,6 +161,7 @@ _traffic_actor_ids: set[int] = set()
 
 # ── coexist branch helpers ──────────────────────────────────────────────────
 from digital_twin_bridge.actor_ownership import is_drive_owned  # noqa: E402
+from digital_twin_bridge.bg_traffic import unavailable_status
 from digital_twin_bridge.voices_slots import SlotClaimError, park_actor, reset_adopted_actor  # noqa: E402
 from digital_twin_bridge.editor_camera import CameraPose, Envelope, FlyCamera, pose_behind, pose_from_dict  # noqa: E402
 
@@ -506,6 +507,7 @@ class DriveSession:
         fleet=None,
         slots=None,
         hud_sensors: bool = True,
+        bg_traffic=None,
     ):
         self._world = world
         self._map = carla_map
@@ -525,6 +527,8 @@ class DriveSession:
         # VOICES scenario slots (voices_slots.SlotService): validates a session's scenario role
         # and remembers parked slot cars; None = the legacy DTB_VOICES_EGO_ROLE behaviour only.
         self._slots = slots
+        # Background-traffic script control (bg_traffic.BackgroundTraffic); None = no control.
+        self._bg_traffic = bg_traffic
         # Emergency-vehicle pull-over warning: every tick, broadcast a
         # v2x_alert for each firetruck within this radius. Browser dedups by
         # actor id (single toast per truck, distance updates in place) and
@@ -2880,6 +2884,15 @@ async def handle_message(session: DriveSession, msg: dict, map_controller=None) 
             return session.list_world_actors(int(msg.get("max", 400)))
         elif msg_type == "inspect_actor":
             return session.inspect_actor(int(msg["actor_id"]))
+        elif msg_type in ("bg_traffic_status", "bg_traffic_start", "bg_traffic_stop"):
+            bg = session._bg_traffic
+            if bg is None:
+                return unavailable_status()
+            if msg_type == "bg_traffic_start":
+                return await bg.start()
+            if msg_type == "bg_traffic_stop":
+                return await bg.stop()
+            return await bg.status()
         elif msg_type == "list_voices_slots":
             if session._slots is None:
                 return {"type": "voices_slots", "slots": [], "local_org": "", "default": "",
@@ -3098,6 +3111,7 @@ async def serve_drive(
     fleet=None,
     slots=None,
     hud_sensors: bool = True,
+    bg_traffic=None,
 ):
     """
     Handle a single WebSocket connection for driving.
@@ -3139,6 +3153,7 @@ async def serve_drive(
         fleet=fleet,
         slots=slots,
         hud_sensors=hud_sensors,
+        bg_traffic=bg_traffic,
     )
     frame_task = None
     frame_stop = asyncio.Event()

@@ -33,6 +33,15 @@
 		worldActors,
 		worldActorsInfo
 	} from '$lib/stores/editor';
+	import {
+		bgTraffic,
+		bgTrafficBusy,
+		formatUptime,
+		requestBgTraffic,
+		resetBgTraffic,
+		startBgTraffic,
+		stopBgTraffic
+	} from '$lib/stores/bgTraffic';
 	import { TICK_MS, buildCameraMove, isFlyKey, mouseTurn, stepSpeed } from '$lib/flyInput';
 	import { isTypingTarget } from '$lib/inputGate';
 	import { loadRuntimeConfig, resolveWsUrl } from '$lib/runtime-config';
@@ -53,6 +62,29 @@
 	const keys = new Set<string>();
 	let tickTimer: ReturnType<typeof setInterval> | null = null;
 	let listTimer: ReturnType<typeof setInterval> | null = null;
+
+	// Background traffic (the SUMO bridge): status block with Start / Stop.
+	let bgState = $derived($bgTraffic?.state ?? 'unavailable');
+	let bgBusy = $derived($bgTrafficBusy !== null || bgState === 'starting' || bgState === 'stopping');
+	let bgDot = $derived(
+		bgState === 'running' ? 'bg-emerald-400' : bgState === 'starting' || bgState === 'stopping' ? 'bg-amber-400' : 'bg-gray-500'
+	);
+	let bgStatusText = $derived.by(() => {
+		const s = $bgTraffic;
+		if (!s) return '';
+		if (s.state === 'running') return `running${s.uptime_s ? ` · ${formatUptime(s.uptime_s)}` : ''}`;
+		if (s.state === 'starting') return 'starting…';
+		if (s.state === 'stopping') return 'stopping… (parking the cars)';
+		return 'stopped';
+	});
+	let bgNote = $derived.by(() => {
+		const s = $bgTraffic;
+		if (!s) return '';
+		if (s.error) return s.error;
+		if (s.last_start && !s.last_start.ok) return `start failed (exit ${s.last_start.code}): ${s.last_start.output.split('\n').at(-1) ?? ''}`;
+		if (s.last_stop && !s.last_stop.ok) return `stop failed (exit ${s.last_stop.code}): ${s.last_stop.output.split('\n').at(-1) ?? ''}`;
+		return '';
+	});
 
 	let active = $derived($driveConnected && $sessionState === 'driving' && $sessionMode === 'editor');
 	let pose = $derived($cameraPose);
@@ -98,6 +130,10 @@
 
 	$effect(() => {
 		if (active) requestWorldActors();
+	});
+
+	$effect(() => {
+		if ($driveConnected) requestBgTraffic();
 	});
 
 	function tick() {
@@ -209,14 +245,23 @@
 		setTimeout(() => goto('/drive'), 150);
 	}
 
+	function toggleBgTraffic() {
+		if (bgState === 'running') stopBgTraffic();
+		else if (bgState === 'stopped') startBgTraffic();
+		// the slot cars park or come back a few seconds later
+		setTimeout(() => requestWorldActors(), 5000);
+	}
+
 	onMount(async () => {
 		window.addEventListener('keydown', handleKeydown);
 		window.addEventListener('keyup', handleKeyup);
 		window.addEventListener('blur', clearKeys);
 		document.addEventListener('pointerlockchange', handlePointerLockChange);
 		tickTimer = setInterval(tick, TICK_MS);
+		let ticks = 0;
 		listTimer = setInterval(() => {
 			if (active) requestWorldActors();
+			if ($driveConnected && ++ticks % 3 === 0) requestBgTraffic();
 		}, 1000);
 		setOnFrame((blob: Blob) => {
 			cameraViewRef?.pushFrame(blob);
@@ -239,6 +284,7 @@
 		if ($sessionState === 'driving' || $sessionState === 'reconstructing') endSession();
 		disconnect();
 		resetEditorStore();
+		resetBgTraffic();
 	});
 
 	function fmt(v: number | null | undefined, digits = 1): string {
@@ -387,6 +433,28 @@
 				<div class="px-2 py-4 text-gray-500">{$worldActors.length ? 'nothing matches the filter' : 'no actors listed yet'}</div>
 			{/each}
 		</div>
+		{#if $bgTraffic?.available}
+			<div class="mt-2 border-t border-white/10 px-2 pt-2" data-testid="editor-bg-traffic">
+				<div class="pb-1 text-[10px] uppercase tracking-widest text-gray-500">Background traffic</div>
+				<div class="flex items-center gap-2">
+					<span class="inline-block h-1.5 w-1.5 shrink-0 rounded-full {bgDot}"></span>
+					<span class="truncate text-gray-200" title={$bgTraffic.label} data-testid="editor-bg-state">{bgStatusText}</span>
+					<button
+						type="button"
+						onclick={toggleBgTraffic}
+						disabled={bgBusy}
+						class="ml-auto shrink-0 cursor-pointer rounded bg-white/10 px-2 py-0.5 text-white hover:bg-white/20 disabled:cursor-default disabled:opacity-50"
+						data-testid="editor-bg-toggle"
+					>
+						{bgState === 'running' || bgState === 'stopping' ? 'Stop' : 'Start'}
+					</button>
+				</div>
+				{#if $bgTraffic.last_line}
+					<div class="truncate pt-0.5 text-[10px] text-gray-500" title={$bgTraffic.last_line}>{$bgTraffic.last_line}</div>
+				{/if}
+				{#if bgNote}<div class="pt-0.5 text-[10px] text-amber-300">{bgNote}</div>{/if}
+			</div>
+		{/if}
 		<div class="mt-2 border-t border-white/10 px-2 pt-2">
 			<div class="pb-1 text-[10px] uppercase tracking-widest text-gray-500">Session</div>
 			<button type="button" onclick={switchToDriving} class="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-[3px] text-left text-gray-200 hover:bg-white/10 hover:text-white" data-testid="editor-switch-driving">

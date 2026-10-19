@@ -95,6 +95,16 @@ class Config:
     # UE5 scene render (~27 ms, ~0.9 GB VRAM), so keep them few.
     EDITOR_MAX_SESSIONS: int = 2
 
+    # Background traffic (on RFS the SUMO bridge, ~/sumo-bg): the editor's "Background
+    # traffic" block starts and stops it through these shell commands (bg_traffic.py).
+    # The control is offered only while BG_TRAFFIC_REQUIRES exists; START="" disables it.
+    BG_TRAFFIC_START: str = "SUMO_BG_DETACH=1 bash ~/sumo-bg/run-sumo-bg.sh --log /work/logs/sumo-bg-$(date +%Y%m%d-%H%M%S).jsonl --log-file /work/logs/bridge.log"
+    BG_TRAFFIC_STOP: str = "docker kill -s INT sumo-bg"
+    BG_TRAFFIC_PROBE: str = "docker inspect -f '{{.State.Running}} {{.State.StartedAt}}' sumo-bg"
+    BG_TRAFFIC_TAIL: str = "tail -n 1 ~/sumo-bg/logs/bridge.log"
+    BG_TRAFFIC_REQUIRES: str = "~/sumo-bg/run-sumo-bg.sh"
+    BG_TRAFFIC_LABEL: str = "SUMO background traffic"
+
     # Logging
     LOG_LEVEL: str = "INFO"
 
