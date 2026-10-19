@@ -43,6 +43,9 @@
 
 	onMount(() => {
 		requestFleet();
+		// states ride on telemetry; stats and tracks only come with a list request
+		const timer = setInterval(requestFleet, 5000);
+		return () => clearInterval(timer);
 	});
 
 	function toneClass(state: string): string {
@@ -242,7 +245,7 @@
 
 	<div class="flex items-center gap-3 border-t border-gray-800 px-3 py-1 text-[10px] text-gray-500">
 		{#if $fleetStats}
-			<span>{$fleetStats.count}/{$fleetStats.max} vehicles</span>
+			<span>{vehicles.length}/{$fleetStats.max} vehicles</span>
 			<span class={$fleetStats.degraded ? 'text-amber-300' : ''}>tick {$fleetStats.tick_ms_p95.toFixed(1)} ms p95 · {$fleetStats.decision_hz} Hz</span>
 		{:else}
 			<span>fleet status unknown</span>
