@@ -112,6 +112,13 @@ class Config:
     V2X_STREAMER_AUTOLAUNCH: str = "1"        # relaunch DT's JSON streamer in dt-core when it is missing
     V2X_STREAMER_CONTAINER: str = "dt-core"
 
+    # V2X-reactive driving models: the server-owned fleet of civilians and ERVs.
+    FLEET_ENABLED: str = "1"
+    FLEET_MAX_VEHICLES: int = 12
+    FLEET_DECISION_EVERY_N_TICKS: int = 2     # behaviour decisions per vehicle at 20 Hz / N
+    FLEET_TICK_BUDGET_MS: float = 20.0        # p95 fleet tick time before decisions slow down
+    FLEET_LIGHT_SCAN_EVERY_N_TICKS: int = 10  # emergency light-state scan cadence
+
     @classmethod
     def from_env(cls) -> "Config":
         """Create a Config instance from environment variables.
@@ -159,6 +166,10 @@ class Config:
     @property
     def v2x_streamer_autolaunch(self) -> bool:
         return _truthy(self.V2X_STREAMER_AUTOLAUNCH)
+
+    @property
+    def fleet_enabled(self) -> bool:
+        return _truthy(self.FLEET_ENABLED)
 
     def setup_logging(self) -> None:
         """Configure the root logger based on ``LOG_LEVEL``."""

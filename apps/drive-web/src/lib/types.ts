@@ -100,7 +100,18 @@ export interface NearbyActor {
 	id: number;
 	pos: [number, number];
 	yaw: number;
-	type: 'traffic' | 'dynamic' | 'other';
+	type: 'traffic' | 'dynamic' | 'civilian' | 'erv' | 'other';
+}
+
+/** One V2X fleet vehicle as carried in telemetry (20 Hz), see V2xFleetVehicle for the full record. */
+export interface V2xFleetCompact {
+	actor_id: number;
+	kind: 'civilian' | 'erv';
+	name: string;
+	state: string;
+	pos: [number, number] | null;
+	yaw: number | null;
+	speed_mps: number | null;
 }
 
 export interface DynamicActor {
@@ -129,6 +140,7 @@ export interface VehicleTelemetry {
 	brake: number;
 	nearby_actors?: NearbyActor[];
 	dynamic_actors?: DynamicActor[];
+	v2x_fleet?: V2xFleetCompact[];
 }
 
 export type TrafficPreset = 'none' | 'light' | 'medium' | 'heavy' | 'chaos';
@@ -405,4 +417,86 @@ export interface V2xDecodedMessage extends DriveMessage {
 	decoded: unknown;
 	summary?: unknown;
 	error: string | null;
+}
+
+// ── V2X-reactive driving models (server-owned fleet of civilians and ERVs) ──
+
+export type V2xSpawnSpec =
+	| 'random'
+	| { ahead_of: 'ego' | number; distance_m: number }
+	| { behind: 'ego' | number; distance_m: number }
+	| { spawn_index: number }
+	| { x: number; y: number; z?: number; yaw?: number }
+	| { lat: number; lon: number; yaw?: number };
+
+export interface V2xFleetVehicle {
+	actor_id: number;
+	name: string;
+	kind: 'civilian' | 'erv';
+	profile: string;
+	blueprint: string;
+	state: string;
+	reason: string;
+	since_s: number;
+	pos: [number, number] | null;
+	yaw: number | null;
+	speed_mps: number | null;
+	target_speed_mps: number | null;
+	offset_m: number;
+	stop: boolean;
+	destination: [number, number] | null;
+	dist_to_destination_m: number | null;
+	arrived: boolean;
+	lane_change: string | null;
+	passing: boolean;
+	spawned_at: number;
+	/** ERV only */
+	siren?: boolean;
+	lights?: boolean | string[];
+	response_type?: string;
+	manual?: boolean;
+	doors_open?: boolean;
+	/** civilian only */
+	erv_key?: string | null;
+}
+
+export interface ErvTrack {
+	key: string;
+	actor_id: number | null;
+	x: number | null;
+	y: number | null;
+	yaw: number | null;
+	speed_mps: number;
+	siren: boolean;
+	lights: boolean;
+	active: boolean;
+	stationary: boolean;
+	role: string;
+	response_type: string | null;
+	source: string;
+	age_s: number;
+	fleet_state: string | null;
+}
+
+export interface V2xFleetStats {
+	count: number;
+	max: number;
+	tick_ms_avg: number;
+	tick_ms_p95: number;
+	budget_ms: number;
+	degraded: boolean;
+	decision_hz: number;
+	tracks: number;
+	events: number;
+}
+
+export interface V2xFleetEvent extends DriveMessage {
+	type: 'v2x_vehicle_event';
+	actor_id: number;
+	name: string;
+	kind: string;
+	from: string | null;
+	to: string | null;
+	reason: string;
+	t: number;
 }

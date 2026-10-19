@@ -134,6 +134,8 @@
 						'match', ['get', 'type'],
 						'dynamic', '#ef4444',  // red for moving geofence actors
 						'traffic', '#f59e0b',  // amber for NPC traffic
+						'erv', '#f43f5e',      // rose for fleet emergency vehicles
+						'civilian', '#38bdf8', // sky for fleet civilians
 						'#94a3b8',             // gray for other vehicles
 					],
 					'circle-stroke-width': 1,

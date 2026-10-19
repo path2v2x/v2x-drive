@@ -73,6 +73,7 @@
 	import TeleportPanel from '$lib/components/TeleportPanel.svelte';
 	import PacketLogPanel from '$lib/components/PacketLogPanel.svelte';
 	import V2xWindows from '$lib/components/V2xWindows.svelte';
+	import V2xVehiclePanel from '$lib/components/V2xVehiclePanel.svelte';
 	import CameraSettingsPanel from '$lib/components/CameraSettingsPanel.svelte';
 	import ScenarioPicker from '$lib/components/ScenarioPicker.svelte';
 	import { checkZoneProximity, resetZoneProximity, clearZones } from '$lib/stores/v2xZones';
@@ -110,6 +111,7 @@
 	let showTrajectoryPanel = $state(false);
 	let showTeleportPanel = $state(false);
 	let showPacketPanel = $state(false);
+	let showFleetPanel = $state(false);
 	let showXoscPicker = $state(false);
 
 	// Split-panel width for the right-side map (px). Persisted in localStorage.
@@ -837,35 +839,35 @@
 				<!-- Bottom action bar -->
 				<div class="absolute bottom-4 left-4 z-20 flex flex-col items-stretch gap-0.5 bg-black/40 backdrop-blur-md rounded-xl border border-white/10 p-1 shadow-lg pointer-events-auto">
 					<!-- Panel toggles -->
-					<button onclick={() => { showWeatherPanel = !showWeatherPanel; showTrafficPanel = false; showCameraPanel = false; showTrajectoryPanel = false; showTeleportPanel = false; }}
+					<button onclick={() => { showWeatherPanel = !showWeatherPanel; showTrafficPanel = false; showCameraPanel = false; showTrajectoryPanel = false; showTeleportPanel = false; showFleetPanel = false; }}
 						aria-pressed={showWeatherPanel}
 						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer {showWeatherPanel
 							? 'bg-cyan-600 text-white shadow-[0_0_8px_rgba(8,145,178,0.45)]'
 							: 'text-gray-300 hover:text-white hover:bg-white/5'}">
 						Weather
 					</button>
-					<button onclick={() => { showTrafficPanel = !showTrafficPanel; showWeatherPanel = false; showCameraPanel = false; showTrajectoryPanel = false; showTeleportPanel = false; }}
+					<button onclick={() => { showTrafficPanel = !showTrafficPanel; showWeatherPanel = false; showCameraPanel = false; showTrajectoryPanel = false; showTeleportPanel = false; showFleetPanel = false; }}
 						aria-pressed={showTrafficPanel}
 						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer {showTrafficPanel
 							? 'bg-amber-600 text-white shadow-[0_0_8px_rgba(217,119,6,0.45)]'
 							: 'text-gray-300 hover:text-white hover:bg-white/5'}">
 						Traffic
 					</button>
-					<button onclick={() => { showCameraPanel = !showCameraPanel; showWeatherPanel = false; showTrafficPanel = false; showTrajectoryPanel = false; showTeleportPanel = false; }}
+					<button onclick={() => { showCameraPanel = !showCameraPanel; showWeatherPanel = false; showTrafficPanel = false; showTrajectoryPanel = false; showTeleportPanel = false; showFleetPanel = false; }}
 						aria-pressed={showCameraPanel}
 						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer {showCameraPanel
 							? 'bg-cyan-600 text-white shadow-[0_0_8px_rgba(8,145,178,0.45)]'
 							: 'text-gray-300 hover:text-white hover:bg-white/5'}">
 						Camera
 					</button>
-					<button onclick={() => { showTrajectoryPanel = !showTrajectoryPanel; showWeatherPanel = false; showTrafficPanel = false; showCameraPanel = false; showTeleportPanel = false; }}
+					<button onclick={() => { showTrajectoryPanel = !showTrajectoryPanel; showWeatherPanel = false; showTrafficPanel = false; showCameraPanel = false; showTeleportPanel = false; showFleetPanel = false; }}
 						aria-pressed={showTrajectoryPanel}
 						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer {showTrajectoryPanel
 							? 'bg-blue-600 text-white shadow-[0_0_8px_rgba(37,99,235,0.45)]'
 							: 'text-gray-300 hover:text-white hover:bg-white/5'}">
 						Trajectory
 					</button>
-					<button onclick={() => { showTeleportPanel = !showTeleportPanel; showWeatherPanel = false; showTrafficPanel = false; showCameraPanel = false; showTrajectoryPanel = false; }}
+					<button onclick={() => { showTeleportPanel = !showTeleportPanel; showWeatherPanel = false; showTrafficPanel = false; showCameraPanel = false; showTrajectoryPanel = false; showFleetPanel = false; }}
 						aria-pressed={showTeleportPanel}
 						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer {showTeleportPanel
 							? 'bg-emerald-600 text-white shadow-[0_0_8px_rgba(5,150,105,0.45)]'
@@ -888,6 +890,14 @@
 							: 'text-gray-300 hover:text-white hover:bg-white/5'}"
 						title="V2X message viewer — live J2735 messages per vehicle (TENA feed)">
 						V2X
+					</button>
+					<button onclick={() => { showFleetPanel = !showFleetPanel; showWeatherPanel = false; showTrafficPanel = false; showCameraPanel = false; showTrajectoryPanel = false; showTeleportPanel = false; }}
+						aria-pressed={showFleetPanel}
+						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer {showFleetPanel
+							? 'bg-rose-600 text-white shadow-[0_0_8px_rgba(225,29,72,0.45)]'
+							: 'text-gray-300 hover:text-white hover:bg-white/5'}"
+						title="V2X fleet — emergency vehicles and civilians that react to V2X messages">
+						Fleet
 					</button>
 					<button onclick={() => { showXoscPicker = !showXoscPicker; showTeleportPanel = false; }}
 						aria-pressed={showXoscPicker}
@@ -945,6 +955,11 @@
 				<!-- Trajectory Panel -->
 				{#if showTrajectoryPanel}
 					<TrajectoryPanel onClose={() => { showTrajectoryPanel = false; }} />
+				{/if}
+
+				<!-- V2X Fleet Panel -->
+				{#if showFleetPanel}
+					<V2xVehiclePanel onClose={() => { showFleetPanel = false; }} />
 				{/if}
 
 				<!-- Teleport Panel -->

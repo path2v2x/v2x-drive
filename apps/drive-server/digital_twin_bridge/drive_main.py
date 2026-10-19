@@ -326,6 +326,9 @@ class DriveMapController:
                 raise RuntimeError("Stop trajectory playback before switching maps")
             if self.openscenario_runner.is_running:
                 raise RuntimeError("Stop OpenSCENARIO before switching maps")
+            fleet = self._runtime.get("fleet")
+            if fleet is not None and fleet.has_vehicles:
+                raise RuntimeError("Despawn the V2X fleet before switching maps")
 
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(None, self._conn.switch_drive_map, map_id)
@@ -355,6 +358,8 @@ class DriveMapController:
             v2x_ctx = self._runtime.get("v2x")
             if v2x_ctx is not None and v2x_ctx.registry is not None:
                 v2x_ctx.registry.reset()
+            if fleet is not None:
+                fleet.update_world(self._conn.world, self._conn.carla_map)
 
             try:
                 await loop.run_in_executor(None, export_current_map_data, self._conn, self._config, self._publisher)
@@ -450,6 +455,29 @@ async def main():
         except Exception:
             logger.warning("V2X feed setup failed; the message viewer is disabled", exc_info=True)
             v2x_ctx = None
+
+    # ── V2X-reactive driving models: a server-owned fleet of civilians and ERVs ──
+    fleet = None
+    if config.fleet_enabled:
+        try:
+            from digital_twin_bridge.v2x_behaviors.fleet import Fleet
+            fleet = Fleet(
+                runtime["world"], runtime["carla_map"], config,
+                hub=v2x_ctx.hub if v2x_ctx is not None else None,
+                codec=v2x_ctx.codec if v2x_ctx is not None else None,
+                registry=v2x_ctx.registry if v2x_ctx is not None else None,
+            )
+
+            def _fleet_gps_to_xy(lat, lon):
+                from digital_twin_bridge.geo_utils import gps_to_carla
+                loc = gps_to_carla(runtime["carla_map"], lat, lon)
+                return loc.x, loc.y
+
+            fleet.gps_to_xy = _fleet_gps_to_xy
+            runtime["fleet"] = fleet
+        except Exception:
+            logger.warning("V2X fleet setup failed; the driving models are disabled", exc_info=True)
+            fleet = None
 
     map_controller = DriveMapController(conn, config, runtime, publisher)
 
@@ -658,6 +686,7 @@ async def main():
             scene_fetch_max_pages=config.SCENE_FETCH_MAX_PAGES,
             scene_fetch_max_items=config.SCENE_FETCH_MAX_ITEMS,
             v2x=runtime.get("v2x"),
+            fleet=runtime.get("fleet"),
         )
 
     async def tick_loop():
@@ -719,6 +748,13 @@ async def main():
                     )
                 except Exception as e:
                     logger.debug("V2X registry refresh failed: %s", e)
+            # V2X fleet: behaviour decisions and controls, in lockstep with the tick.
+            fleet = runtime.get("fleet")
+            if fleet is not None:
+                try:
+                    await loop.run_in_executor(None, fleet.tick)
+                except Exception as e:
+                    logger.debug("Fleet tick failed: %s", e)
             elapsed = loop.time() - start
             await asyncio.sleep(max(0.0, target_dt - elapsed))
 
@@ -730,12 +766,15 @@ async def main():
                 continue
             try:
                 from digital_twin_bridge.drive_server import _traffic_actor_ids
+                fleet_obj = runtime.get("fleet")
+                fleet_ids = fleet_obj.actor_ids() if fleet_obj is not None else set()
                 def orphan(actor) -> bool:
                     # coexist branch: other clients' actors are never orphans
                     return (not config.protect_foreign_actors) or is_drive_owned(
                         actor, config.voices_roles, config.keep_voices_ego)
                 vehicles = [v for v in world.get_actors().filter("vehicle.*")
                             if v.id not in _traffic_actor_ids
+                            and v.id not in fleet_ids
                             and v.attributes.get("role_name") != "trajectory"
                             and orphan(v)]
                 sensors = [s for s in world.get_actors().filter("sensor.*") if orphan(s)]
@@ -789,6 +828,7 @@ async def main():
     logger.info("  V2X props   : session-owned historical reconstruction")
     logger.info("  State source: metadata-only V2X registry (no prop spawning)")
     logger.info("  State pub   : %s", publisher.describe() if publisher else "disabled")
+    logger.info("  V2X fleet   : %s", ("enabled, up to %d vehicles" % fleet.max_vehicles) if fleet is not None else "disabled")
     if v2x_ctx is not None:
         logger.info("  V2X feed    : json stream %s:%d, udp %s:%d, decoder %s, roster %s",
                     config.V2X_JSON_STREAM_HOST, config.V2X_JSON_STREAM_PORT,
@@ -852,6 +892,13 @@ async def main():
             runtime["openscenario_runner"].stop()
         except Exception as e:
             logger.debug("OpenSCENARIO stop on shutdown failed: %s", e)
+
+        # Remove the V2X fleet (server-owned vehicles).
+        try:
+            if runtime.get("fleet") is not None:
+                runtime["fleet"].despawn_all()
+        except Exception as e:
+            logger.debug("Fleet despawn on shutdown failed: %s", e)
 
         # Stop the V2X feed taps.
         if v2x_ctx is not None:

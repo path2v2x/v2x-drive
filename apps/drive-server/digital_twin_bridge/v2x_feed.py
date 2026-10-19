@@ -322,6 +322,13 @@ class V2xHub:
     def senders(self) -> list:
         return list(self._stats.keys())
 
+    def latest_raw(self, key: str) -> Optional[tuple]:
+        """The most recent frame of a sender as ``(raw_bytes, t_rx)``, or None."""
+        stats = self._stats.get(key)
+        if stats is None or not stats.last_raw:
+            return None
+        return stats.last_raw, stats.last_raw_t
+
     def vehicle_state(self, key: str) -> Optional[VehicleState]:
         return self._vehicles.get(key)
 

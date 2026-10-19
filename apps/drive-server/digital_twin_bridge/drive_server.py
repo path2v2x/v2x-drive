@@ -494,10 +494,13 @@ class DriveSession:
         scene_fetch_timeout_seconds: float = DEFAULT_SCENE_FETCH_TIMEOUT_SECONDS,
         scene_fetch_max_pages: int = DEFAULT_SCENE_FETCH_MAX_PAGES,
         scene_fetch_max_items: int = DEFAULT_SCENE_FETCH_MAX_ITEMS,
+        fleet=None,
     ):
         self._world = world
         self._map = carla_map
         self._api_fetcher = api_fetcher
+        # Server-owned V2X fleet (civilians / ERVs driven by the behaviour models); None = disabled.
+        self._fleet = fleet
         # Emergency-vehicle pull-over warning: every tick, broadcast a
         # v2x_alert for each firetruck within this radius. Browser dedups by
         # actor id (single toast per truck, distance updates in place) and
@@ -927,10 +930,12 @@ class DriveSession:
             "nearby_actors": self.get_nearby_actors(),
             "dynamic_actors": self.get_dynamic_actors_snapshot(),
         }
+        if self._fleet is not None and self._fleet.has_vehicles:
+            telemetry["v2x_fleet"] = self._fleet.compact_list()
         self._draw_dynamic_actor_geofences()
         eva_alerts = self._check_emergency_vehicle_proximity()
         yield_alerts = self._check_yield_to_firetruck()
-        all_alerts = eva_alerts + yield_alerts
+        all_alerts = eva_alerts + yield_alerts + self._check_erv_advisories()
         if all_alerts:
             telemetry["v2x_alerts"] = all_alerts
         return telemetry
@@ -1960,6 +1965,63 @@ class DriveSession:
 
         return alerts
 
+    def _check_erv_advisories(self) -> list[dict]:
+        """Advisory toasts for the human driver from the fleet's ERV tracker.
+
+        The tracker knows every emergency vehicle with lights on: our own
+        fleet ERVs, VOICES vehicles through their BSM Part II flags and any
+        emergency-blueprint car whose Special1 light is on (a DT driver
+        pressing Ctrl+L).  Two advisories: an active ERV approaching from
+        behind (pull over) and a stopped ERV ahead (slow down, move over).
+        Ids stay stable per track so the browser updates the same toast.
+        """
+        if self._fleet is None or self.vehicle is None:
+            return []
+        try:
+            tracks = self._fleet.erv_tracks()
+        except Exception:
+            return []
+        if not tracks:
+            return []
+        from digital_twin_bridge.v2x_behaviors.geometry import relative_position, same_direction
+        tf = self.vehicle.get_transform()
+        ex, ey, eyaw = tf.location.x, tf.location.y, tf.rotation.yaw
+        alerts: list[dict] = []
+        for t in tracks:
+            if t.get("actor_id") == self.vehicle.id or t.get("x") is None:
+                continue
+            along, lateral = relative_position(ex, ey, eyaw, t["x"], t["y"])
+            dist = math.hypot(t["x"] - ex, t["y"] - ey)
+            if dist > 150.0:
+                continue
+            base_id = t.get("actor_id") if isinstance(t.get("actor_id"), int) else (hash(t.get("key")) % 1_000_000)
+            if t.get("active") and along < 0 and abs(lateral) <= 8.0 and same_direction(eyaw, t.get("yaw") or eyaw, 45.0):
+                alerts.append({
+                    "id": 2_000_000 + base_id,
+                    "message": "Emergency vehicle approaching from behind, pull over",
+                    "signal_type": "warning",
+                    "distance": round(dist, 1),
+                })
+            elif t.get("stationary") and t.get("lights") and along > 0 and abs(lateral) <= 10.0:
+                alerts.append({
+                    "id": 3_000_000 + base_id,
+                    "message": "Stopped emergency vehicle ahead, slow down and move over",
+                    "signal_type": "alert",
+                    "distance": round(dist, 1),
+                })
+        return alerts
+
+    def _actor_kind(self, actor_id: int) -> str:
+        if actor_id in _dynamic_actor_ids:
+            return "dynamic"
+        if actor_id in _traffic_actor_ids:
+            return "traffic"
+        if self._fleet is not None:
+            kind = self._fleet.kind_of(actor_id)
+            if kind:
+                return kind
+        return "other"
+
     def get_nearby_actors(self, radius: float = 250.0) -> list[dict]:
         """Return all vehicles within radius meters of the player vehicle.
 
@@ -1983,11 +2045,7 @@ class DriveSession:
                 "id": a.id,
                 "pos": [round(t.location.x, 2), round(t.location.y, 2)],
                 "yaw": round(t.rotation.yaw, 1),
-                "type": (
-                    "dynamic" if a.id in _dynamic_actor_ids
-                    else "traffic" if a.id in _traffic_actor_ids
-                    else "other"
-                ),
+                "type": self._actor_kind(a.id),
             })
 
         return actors
@@ -2501,6 +2559,42 @@ async def handle_message(session: DriveSession, msg: dict, map_controller=None) 
             if session._trajectory_player is None:
                 return {"type": "trajectory_status", "active": False}
             return {"type": "trajectory_status", **session._trajectory_player.status()}
+        elif msg_type == "spawn_v2x_vehicle":
+            if session._fleet is None:
+                return {"type": "error", "message": "V2X driving models are disabled on this server"}
+            return session._fleet.spawn(
+                kind=str(msg.get("kind", "civilian")),
+                blueprint=msg.get("blueprint"),
+                profile=msg.get("profile"),
+                spawn=msg.get("spawn"),
+                destination=msg.get("destination", "random"),
+                params=msg.get("params") if isinstance(msg.get("params"), dict) else None,
+                ego_actor=session.vehicle if session.is_active else None,
+            )
+        elif msg_type == "despawn_v2x_vehicle":
+            if session._fleet is None:
+                return {"type": "error", "message": "V2X driving models are disabled on this server"}
+            return session._fleet.despawn(int(msg["actor_id"]))
+        elif msg_type == "despawn_v2x_vehicles":
+            if session._fleet is None:
+                return {"type": "error", "message": "V2X driving models are disabled on this server"}
+            return session._fleet.despawn_all()
+        elif msg_type == "list_v2x_vehicles":
+            if session._fleet is None:
+                return {"type": "v2x_vehicles", "vehicles": [], "tracks": [], "stats": {"count": 0, "max": 0}}
+            return session._fleet.list()
+        elif msg_type == "set_erv_state":
+            if session._fleet is None:
+                return {"type": "error", "message": "V2X driving models are disabled on this server"}
+            return session._fleet.set_erv_state(
+                int(msg["actor_id"]),
+                siren=msg.get("siren"),
+                lights=msg.get("lights"),
+                arrived=msg.get("arrived"),
+                response_type=msg.get("response_type"),
+                manual=msg.get("manual"),
+                destination=msg.get("destination"),
+            )
         elif msg_type == "end_session":
             return session.end(release=bool(msg.get("release", False)))
         else:
@@ -2544,6 +2638,7 @@ async def serve_drive(
     scene_fetch_max_pages: int = DEFAULT_SCENE_FETCH_MAX_PAGES,
     scene_fetch_max_items: int = DEFAULT_SCENE_FETCH_MAX_ITEMS,
     v2x=None,
+    fleet=None,
 ):
     """
     Handle a single WebSocket connection for driving.
@@ -2582,6 +2677,7 @@ async def serve_drive(
         scene_fetch_timeout_seconds=scene_fetch_timeout_seconds,
         scene_fetch_max_pages=scene_fetch_max_pages,
         scene_fetch_max_items=scene_fetch_max_items,
+        fleet=fleet,
     )
     frame_task = None
     frame_stop = asyncio.Event()
@@ -2637,6 +2733,25 @@ async def serve_drive(
             logger.debug("V2X viewer setup failed: %s", e)
             v2x_viewer = None
 
+    # V2X fleet: forward behaviour events (spawn, state changes, despawn) to this browser.
+    fleet_queue = None
+    fleet_task = None
+
+    async def pump_fleet_events():
+        while True:
+            event = await fleet_queue.get()
+            try:
+                await websocket.send(json.dumps(event))
+            except Exception:
+                break
+
+    if fleet is not None:
+        try:
+            fleet_queue = fleet.subscribe()
+            fleet_task = asyncio.create_task(pump_fleet_events())
+        except Exception as e:
+            logger.debug("Fleet subscribe failed: %s", e)
+
     _active_sessions.append(session)
     try:
         async for raw_message in websocket:
@@ -2687,6 +2802,15 @@ async def serve_drive(
             v2x_task.cancel()
             try:
                 await v2x_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if fleet is not None and fleet_queue is not None:
+            fleet.unsubscribe(fleet_queue)
+        if fleet_task is not None:
+            fleet_task.cancel()
+            try:
+                await fleet_task
             except (asyncio.CancelledError, Exception):
                 pass
 
