@@ -69,7 +69,8 @@
 	import CameraViewComponent from '$lib/components/CameraView.svelte';
 	import HudOverlay from '$lib/components/HudOverlay.svelte';
 	import DrivingHud from '$lib/components/DrivingHud.svelte';
-	import SideRail from '$lib/components/SideRail.svelte';
+	import ControlBar from '$lib/components/ControlBar.svelte';
+	import type { ControlSection } from '$lib/components/ControlBar.svelte';
 	import type { RailItem } from '$lib/types';
 	import { isTypingTarget } from '$lib/inputGate';
 	import V2xToast from '$lib/components/V2xToast.svelte';
@@ -158,6 +159,7 @@
 		}
 	});
 	let hudWidth = $derived(hudMode === 'pygame' && hudVisible ? '300px' : '0px');
+	let railWidth = $derived(hudMode === 'pygame' ? '172px' : '0px');
 	let showXoscPicker = $state(false);
 
 	// Split-panel width for the right-side map (px). Persisted in localStorage.
@@ -519,34 +521,43 @@
 		showTeleportPanel = name === 'teleport' && !open;
 		showFleetPanel = name === 'fleet' && !open;
 	}
-	let leftRail: RailItem[] = $derived([
-		{ id: 'weather', label: 'Weather', icon: RAIL_ICONS.weather, active: showWeatherPanel, tone: 'info', onClick: () => togglePanel('weather') },
-		{ id: 'traffic', label: 'Traffic', icon: RAIL_ICONS.traffic, active: showTrafficPanel, tone: 'warn', onClick: () => togglePanel('traffic') },
-		{ id: 'camera', label: 'Camera settings', icon: RAIL_ICONS.camera, active: showCameraPanel, tone: 'info', onClick: () => togglePanel('camera') },
-		{ id: 'trajectory', label: 'Trajectory', icon: RAIL_ICONS.trajectory, active: showTrajectoryPanel, tone: 'info', onClick: () => togglePanel('trajectory') },
-		{ id: 'teleport', label: 'Teleport', title: "Teleport this session's ego to a coordinate", icon: RAIL_ICONS.teleport, active: showTeleportPanel, tone: 'ok', onClick: () => togglePanel('teleport') },
-		{ id: 'packets', label: 'Packets', title: 'Live WebSocket wire log', icon: RAIL_ICONS.packets, active: showPacketPanel, tone: 'info', onClick: () => { showPacketPanel = !showPacketPanel; } },
-		{ id: 'v2x', label: 'V2X messages', title: 'V2X message viewer (TENA feed)', icon: RAIL_ICONS.v2x, active: $v2xViewerOpen, tone: 'info', onClick: toggleV2xViewer },
-		{ id: 'fleet', label: 'Fleet', title: 'V2X fleet: emergency vehicles and civilians that react to V2X messages', icon: RAIL_ICONS.fleet, active: showFleetPanel, tone: 'danger', onClick: () => togglePanel('fleet') },
-		{ id: 'scenarios', label: 'Scenarios', title: 'OpenSCENARIO (X)', icon: RAIL_ICONS.scenarios, active: showXoscPicker, tone: 'info', onClick: () => { showXoscPicker = !showXoscPicker; showTeleportPanel = false; } },
-		{ id: 'map', label: mapMode === 'overlay' ? 'Map: full panel' : 'Map: floating', title: 'Toggle map: full panel / floating overlay', icon: RAIL_ICONS.map, active: mapMode === 'panel', onClick: toggleMapMode }
+	let panelItems: RailItem[] = $derived([
+		{ id: 'weather', label: 'Weather', icon: RAIL_ICONS.weather, active: showWeatherPanel, onClick: () => togglePanel('weather') },
+		{ id: 'traffic', label: 'Traffic', icon: RAIL_ICONS.traffic, active: showTrafficPanel, onClick: () => togglePanel('traffic') },
+		{ id: 'camera', label: 'Camera settings', icon: RAIL_ICONS.camera, active: showCameraPanel, onClick: () => togglePanel('camera') },
+		{ id: 'trajectory', label: 'Trajectory', icon: RAIL_ICONS.trajectory, active: showTrajectoryPanel, onClick: () => togglePanel('trajectory') },
+		{ id: 'teleport', label: 'Teleport', title: "Teleport this session's ego to a coordinate", icon: RAIL_ICONS.teleport, active: showTeleportPanel, onClick: () => togglePanel('teleport') },
+		{ id: 'packets', label: 'Packets', title: 'Live WebSocket wire log', icon: RAIL_ICONS.packets, active: showPacketPanel, onClick: () => { showPacketPanel = !showPacketPanel; } },
+		{ id: 'v2x', label: 'V2X messages', title: 'V2X message viewer (TENA feed)', icon: RAIL_ICONS.v2x, active: $v2xViewerOpen, onClick: toggleV2xViewer },
+		{ id: 'fleet', label: 'Fleet', title: 'V2X fleet: emergency vehicles and civilians that react to V2X messages', icon: RAIL_ICONS.fleet, active: showFleetPanel, onClick: () => togglePanel('fleet') },
+		{ id: 'scenarios', label: 'Scenarios', title: 'OpenSCENARIO (X)', icon: RAIL_ICONS.scenarios, active: showXoscPicker, onClick: () => { showXoscPicker = !showXoscPicker; showTeleportPanel = false; } },
+		{ id: 'map', label: mapMode === 'overlay' ? 'Map: floating' : 'Map: full panel', title: 'Toggle map: full panel / floating overlay', icon: RAIL_ICONS.map, active: mapMode === 'panel', onClick: toggleMapMode }
 	]);
-	let rightRailViews: RailItem[] = $derived(
+	let cameraItems: RailItem[] = $derived(
 		(['chase', 'hood', 'bird', 'free'] as CameraView[]).map((view) => ({
 			id: `view-${view}`,
-			label: `${view[0].toUpperCase()}${view.slice(1)} camera (Tab cycles)`,
-			text: view.toUpperCase(),
+			label: `${view[0].toUpperCase()}${view.slice(1)}`,
+			title: `${view[0].toUpperCase()}${view.slice(1)} camera (Tab cycles the views)`,
 			active: activeCamera === view,
 			onClick: () => handleCameraSwitch(view)
 		}))
 	);
-	let rightRailActions: RailItem[] = $derived([
+	let sessionItems: RailItem[] = $derived([
 		...(inputMode === 'wheel' && gamepad
 			? [{ id: 'calibrate', label: 'Calibrate wheel', icon: RAIL_ICONS.calibrate, onClick: () => { showCalibration = true; } } as RailItem]
 			: []),
 		{ id: 'clear', label: 'Clear NPCs', title: 'Delete all non-ego vehicles (traffic, scenario actors, trajectory playback, placed cars)', icon: RAIL_ICONS.clear, tone: 'warn', onClick: () => clearNonEgoVehicles() },
-		{ id: 'respawn', label: 'Respawn', icon: RAIL_ICONS.respawn, tone: 'info', onClick: () => respawnVehicle() },
+		{ id: 'respawn', label: 'Respawn', icon: RAIL_ICONS.respawn, onClick: () => respawnVehicle() },
 		{ id: 'end', label: 'End session', icon: RAIL_ICONS.end, tone: 'danger', onClick: handleEndSession }
+	]);
+	let controlSections: ControlSection[] = $derived([
+		{ title: 'Panels', items: panelItems },
+		{
+			title: 'Camera',
+			items: cameraItems,
+			note: activeCamera === 'bird' && $birdAltitude !== null ? `altitude ${Math.round($birdAltitude)} m` : undefined
+		},
+		{ title: 'Session', items: sessionItems }
 	]);
 
 	function handleCalibrationComplete() {
@@ -665,7 +676,7 @@
 	<ScenarioPicker onclose={() => { showXoscPicker = false; }} />
 {/if}
 
-<div class="h-screen w-screen bg-black relative overflow-hidden" style="--hud-w: {driveState === 'driving' ? hudWidth : '0px'}">
+<div class="h-screen w-screen bg-black relative overflow-hidden" style="--hud-w: {driveState === 'driving' ? hudWidth : '0px'}; --rail-w: {driveState === 'driving' ? railWidth : '0px'}">
 	<!-- Lobby: top-left corner (nothing else lives there). Driving HUD: the
 	     top-left is the map toggle, so the link moves to the top-center pill. -->
 	<a
@@ -990,19 +1001,6 @@
 					<DrivingHud telemetry={currentTelemetry} clientFps={$clientFps} {inputMode} {connected} />
 				{/if}
 
-				{#if mapMode === 'overlay' && mapData}
-					<DriveMiniMap
-						roadLines={mapData.road_network}
-						originLat={mapData.geo_ref.origin_lat}
-						originLon={mapData.geo_ref.origin_lon}
-						fullPanel={false}
-						corner={hudMode === 'pygame' ? 'bottom-right' : 'top-left'}
-					/>
-				{/if}
-
-				<!-- V2X toast notifications -->
-				<V2xToast />
-
 				{#if hudMode === 'classic'}
 				<!-- Camera switcher (top-right) -->
 				<div class="absolute top-4 right-4 z-20 flex items-center gap-0.5 bg-black/40 backdrop-blur-md rounded-xl border border-white/10 p-1 shadow-lg pointer-events-auto">
@@ -1137,17 +1135,24 @@
 				</div>
 
 				{:else}
-					<SideRail side="left" items={leftRail} />
-					<SideRail
-						side="right"
-						items={rightRailViews}
-						actions={rightRailActions}
-						footer={activeCamera === 'bird' && $birdAltitude !== null ? `ALT ${Math.round($birdAltitude)}m` : ''}
+					<ControlBar sections={controlSections} footer="Tab: next camera · H: hide the HUD" />
+				{/if}
+
+				<!-- Overlays and panels live between the HUD column (--hud-w) and the control bar (--rail-w) -->
+				<div class="absolute inset-y-0 pointer-events-none [&>*]:pointer-events-auto" style="left: var(--hud-w, 0px); right: var(--rail-w, 0px)">
+				{#if mapMode === 'overlay' && mapData}
+					<DriveMiniMap
+						roadLines={mapData.road_network}
+						originLat={mapData.geo_ref.origin_lat}
+						originLon={mapData.geo_ref.origin_lon}
+						fullPanel={false}
+						corner={hudMode === 'pygame' ? 'bottom-right' : 'top-left'}
 					/>
 				{/if}
 
-				<!-- Panels anchored to the left edge sit right of the HUD column (--hud-w) -->
-				<div class="absolute inset-y-0 right-0 pointer-events-none [&>*]:pointer-events-auto" style="left: var(--hud-w, 0px)">
+				<!-- V2X toast notifications -->
+				<V2xToast />
+
 				<!-- V2X Signal Placer Panel -->
 				{#if showV2xPlacer}
 					<V2xSignalPlacer onClose={() => { showV2xPlacer = false; }} />

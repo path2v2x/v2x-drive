@@ -1,8 +1,8 @@
-# Driving HUD and side rails
+# Driving HUD and control bar
 
 The driving view is laid out like CARLA's `manual_control.py` pygame window: a
-translucent telemetry column on the left of the camera and two icon rails
-instead of the old button stacks. The previous overlay (speed + bars at the
+translucent telemetry column on the left of the camera and a matching control
+bar on the right instead of the old button stacks. The previous overlay (speed + bars at the
 bottom, buttons bottom-left, camera tabs top-right) is still there behind
 `/drive?hud=classic`.
 
@@ -15,21 +15,23 @@ letters, Accelerometer and Gyroscope, Location, GNSS, Height, the throttle /
 steer / brake bars, the Reverse / Hand brake / Manual boxes, Gear, the
 collision graph (the last 200 frames, scaled to the window's maximum, plus the
 last thing hit), Number of vehicles and the nearby vehicles within 200 m,
-nearest first. The footer shows the input mode and the two keys.
+nearest first. The footer shows the input mode.
 
 Keys while driving: `Tab` cycles chase → hood → bird → free, `H` hides and
 shows the column. Keys typed into any text field, select or editable element
 never reach the car or the shortcuts (`$lib/inputGate.ts`, shared by the
 driving controls and the page).
 
-## The rails
+## The control bar (right, 172 px)
 
-Left rail (panels): Weather, Traffic, Camera settings, Trajectory, Teleport,
-Packets, V2X messages, Fleet, Scenarios, Map (floating / full panel). Right
-rail: the four camera views (with the bird altitude underneath), then Calibrate
-(wheel input only), Clear NPCs, Respawn and End. Hovering a button shows its
-name. Panels that open from the left rail sit right of the column; the floating
-mini-map moves to the bottom-right corner.
+The same translucent column as the HUD, with every button named and grouped:
+**Panels** (Weather, Traffic, Camera settings, Trajectory, Teleport, Packets,
+V2X messages, Fleet, Scenarios, Map floating / full panel), **Camera** (Chase,
+Hood, Bird, Free, with the bird altitude underneath) and **Session**
+(Calibrate wheel for wheel input, Clear NPCs, Respawn, End). The open panel
+and the active camera are highlighted. Overlays and panels live between the
+two columns: the floating mini-map sits bottom-right of that area, toasts
+top-right, and panels that open from the bar keep their usual corners.
 
 ## Server side
 

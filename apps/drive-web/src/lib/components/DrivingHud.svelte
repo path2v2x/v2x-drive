@@ -107,6 +107,6 @@
 
 	<div class="absolute inset-x-3 bottom-2 flex items-center justify-between text-[10px] text-gray-400">
 		<span><span class="inline-block h-1.5 w-1.5 rounded-full {connected ? 'bg-green-400' : 'bg-red-500'}"></span> {inputMode === 'wheel' ? 'Wheel' : 'WASD'}</span>
-		<span>H hud · Tab camera</span>
+		<span>H: hide</span>
 	</div>
 </aside>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import DrivingHud from '$lib/components/DrivingHud.svelte';
-import SideRail from '$lib/components/SideRail.svelte';
+import ControlBar from '$lib/components/ControlBar.svelte';
 import type { RailItem, VehicleTelemetry } from '$lib/types';
 
 function telemetry(): VehicleTelemetry {
@@ -74,22 +74,38 @@ describe('DrivingHud', () => {
 	});
 });
 
-describe('SideRail', () => {
-	it('renders buttons with labels, marks the active one and calls the handlers', async () => {
+describe('ControlBar', () => {
+	it('renders named buttons by section, marks the active ones and calls the handlers', async () => {
 		const clicks: string[] = [];
-		const items: RailItem[] = [
-			{ id: 'weather', label: 'Weather', icon: 'M0 0h1', active: true, tone: 'info', onClick: () => clicks.push('weather') },
-			{ id: 'chase', label: 'Chase camera', text: 'CHASE', onClick: () => clicks.push('chase') }
+		const panels: RailItem[] = [
+			{ id: 'weather', label: 'Weather', icon: 'M0 0h1', active: true, onClick: () => clicks.push('weather') },
+			{ id: 'fleet', label: 'Fleet', icon: 'M0 0h1', onClick: () => clicks.push('fleet') }
 		];
-		const actions: RailItem[] = [{ id: 'end', label: 'End session', icon: 'M0 0h1', tone: 'danger', onClick: () => clicks.push('end') }];
-		render(SideRail, { props: { items, side: 'right', actions, footer: 'ALT 120m' } });
+		const cameras: RailItem[] = [
+			{ id: 'chase', label: 'Chase', active: false, onClick: () => clicks.push('chase') },
+			{ id: 'bird', label: 'Bird', active: true, onClick: () => clicks.push('bird') }
+		];
+		const session: RailItem[] = [{ id: 'end', label: 'End session', icon: 'M0 0h1', tone: 'danger', onClick: () => clicks.push('end') }];
+		render(ControlBar, {
+			props: {
+				sections: [
+					{ title: 'Panels', items: panels },
+					{ title: 'Camera', items: cameras, note: 'altitude 120 m' },
+					{ title: 'Session', items: session }
+				],
+				footer: 'Tab: next camera'
+			}
+		});
+		expect(screen.getByTestId('control-bar')).toBeInTheDocument();
+		expect(screen.getByText('Panels')).toBeInTheDocument();
 		const weather = screen.getByRole('button', { name: 'Weather' });
 		expect(weather.getAttribute('aria-pressed')).toBe('true');
-		expect(screen.getByRole('button', { name: 'Chase camera' }).textContent).toContain('CHASE');
+		expect(screen.getByRole('button', { name: 'Bird' }).getAttribute('aria-pressed')).toBe('true');
+		expect(screen.getByRole('button', { name: 'Chase' }).getAttribute('aria-pressed')).toBe('false');
 		await fireEvent.click(weather);
 		await fireEvent.click(screen.getByRole('button', { name: 'End session' }));
 		expect(clicks).toEqual(['weather', 'end']);
-		expect(screen.getByTestId('rail-footer').textContent).toBe('ALT 120m');
-		expect(screen.getByTestId('side-rail-right')).toBeInTheDocument();
+		expect(screen.getByTestId('control-note').textContent).toBe('altitude 120 m');
+		expect(screen.getByTestId('control-footer').textContent).toBe('Tab: next camera');
 	});
 });
