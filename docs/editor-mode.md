@@ -11,8 +11,8 @@ choice (Driving / Editor), the driving control bar has "Switch to editor"
 ## Flying
 
 Hold the right mouse button to look around (pointer lock, with a plain drag as
-the fallback), `W A S D` fly along the view and sideways, `E` / `Q` go up and
-down the world axis, `Shift` is four times faster, the wheel steps the speed
+the fallback), `W A S D` fly along the view and sideways, `Space` or `E` goes
+straight up and `Q` straight down the world axis, `Shift` is four times faster, the wheel steps the speed
 between 1 and 200 m/s, `F` jumps to a viewpoint behind the selected actor and
 `Escape` releases the mouse or the selection. The camera is kept inside an
 envelope 300 m around the map's spawn points. The spectator CARLA itself

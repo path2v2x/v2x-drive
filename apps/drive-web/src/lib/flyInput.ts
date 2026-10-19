@@ -2,8 +2,8 @@
  * Fly-camera input for the Editor: keys and mouse deltas become one
  * ``camera_move`` message per tick (≤ 20 Hz). Pure functions, tested on their own.
  *
- * W/S (or ↑/↓) move along the view, A/D (←/→) sideways, E/Q up and down the
- * world axis, Shift boosts, the mouse (right button held) turns the camera and
+ * W/S (or ↑/↓) move along the view, A/D (←/→) sideways, Space or E straight up
+ * and Q straight down the world axis, Shift boosts, the mouse (right button held) turns the camera and
  * the wheel changes the speed in steps.
  */
 
@@ -15,7 +15,7 @@ export const SPEED_MAX = 200;
 export const SPEED_STEP = 1.25;
 export const TICK_MS = 50;
 
-const FLY_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', 'shift', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
+const FLY_KEYS = new Set(['w', 'a', 's', 'd', 'q', 'e', ' ', 'shift', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
 
 export function isFlyKey(key: string): boolean {
 	return FLY_KEYS.has(key.toLowerCase());
@@ -26,7 +26,7 @@ export function axesFromKeys(keys: ReadonlySet<string>): { f: number; r: number;
 	return {
 		f: (has('w') || has('arrowup') ? 1 : 0) - (has('s') || has('arrowdown') ? 1 : 0),
 		r: (has('d') || has('arrowright') ? 1 : 0) - (has('a') || has('arrowleft') ? 1 : 0),
-		u: (has('e') ? 1 : 0) - (has('q') ? 1 : 0)
+		u: (has('e') || has(' ') ? 1 : 0) - (has('q') ? 1 : 0)
 	};
 }
 

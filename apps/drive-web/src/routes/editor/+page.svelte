@@ -132,6 +132,9 @@
 	}
 
 	function handleKeyup(e: KeyboardEvent) {
+		if (isTypingTarget(e.target)) return;
+		// Space is "straight up": keep it from clicking the last focused button or scrolling
+		if (e.key === ' ') e.preventDefault();
 		keys.delete(e.key.toLowerCase());
 	}
 
@@ -294,7 +297,7 @@
 		<div class="flex justify-between"><span class="text-gray-400">Speed:</span><span data-testid="editor-speed">{fmt(speed, 1)} m/s{keys.has('shift') ? ' ×4' : ''}</span></div>
 		<div class="flex justify-between"><span class="text-gray-400">Frames:</span><span>{Math.round($clientFps)} FPS</span></div>
 		<div class="mt-2 text-[10px] leading-[14px] text-gray-500">
-			Right mouse button: look around · W A S D: fly · E Q: up, down · Shift: faster · wheel: speed · F: focus the selection
+			Right mouse button: look around · W A S D: fly · Space or E: straight up · Q: down · Shift: faster · wheel: speed · F: focus the selection
 		</div>
 
 		<div class="mt-4 pb-1 text-[10px] uppercase tracking-widest text-gray-500">Details</div>

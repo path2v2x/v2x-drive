@@ -7,6 +7,8 @@ describe('fly input', () => {
 		expect(axesFromKeys(new Set(['w', 's']))).toEqual({ f: 0, r: 0, u: 0 });
 		expect(axesFromKeys(new Set(['arrowdown', 'd', 'q']))).toEqual({ f: -1, r: 1, u: -1 });
 		expect(axesFromKeys(new Set(['a', 'e']))).toEqual({ f: 0, r: -1, u: 1 });
+		expect(axesFromKeys(new Set([' ']))).toEqual({ f: 0, r: 0, u: 1 }); // Space: straight up
+		expect(isFlyKey(' ')).toBe(true);
 		expect(isFlyKey('Shift') && isFlyKey('ArrowLeft') && !isFlyKey('x')).toBe(true);
 	});
 
