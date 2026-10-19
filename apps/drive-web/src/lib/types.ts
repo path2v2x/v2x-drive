@@ -282,3 +282,127 @@ export interface XoscFinishedEvent {
 	verdict: 'SUCCESS' | 'FAILURE';
 	duration_sec: number;
 }
+
+// ── V2X message viewer (per-vehicle J2735 feed from the DT / TENA stack) ──
+
+export type V2xVehicleKind = 'voices' | 'ghost' | 'drive' | 'other';
+export type V2xFeedSource = 'tena' | 'udp' | 'stale' | 'none';
+
+export interface V2xVehicleFeed {
+	source: V2xFeedSource;
+	last_rx: number | null;
+	age_s: number | null;
+	rate_hz: number;
+	count: number;
+	types?: Record<string, number>;
+}
+
+export interface V2xVehicleEntry {
+	key: string;
+	actor_id: number | null;
+	role: string;
+	type_id: string;
+	kind: V2xVehicleKind;
+	subkind: string;
+	org: string;
+	bsm_id: string;
+	pos: [number, number, number] | null;
+	yaw: number | null;
+	speed_mps: number | null;
+	emergency: boolean;
+	special_lights: boolean | null;
+	feed: V2xVehicleFeed;
+	in_world: boolean;
+}
+
+export interface V2xFeedStatus {
+	decoder: { available: boolean; error: string | null };
+	json_stream: {
+		enabled?: boolean;
+		listening?: string | null;
+		connected?: boolean;
+		peer?: string | null;
+		records?: number;
+		records_per_s?: number;
+		parse_errors?: number;
+		connections?: number;
+	};
+	udp: { enabled?: boolean; bind?: string; datagrams?: number; datagrams_per_s?: number };
+	roster: { file?: string | null; vehicles?: number; live_vehicles?: number; local_org?: string; scenario?: string };
+	hub: { total?: number; senders?: number; subscriptions?: number };
+	keeper: { launches: number; last_check: Record<string, unknown> | null } | null;
+}
+
+export interface V2xVehicleListMessage extends DriveMessage {
+	type: 'v2x_vehicle_list';
+	version: number;
+	ts: number;
+	feed: V2xFeedStatus;
+	vehicles: V2xVehicleEntry[];
+}
+
+export interface V2xBsmLights {
+	siren: string | null;
+	lights: string | null;
+	multi: string | null;
+	role: string | null;
+	response_type: string | null;
+	events: unknown;
+}
+
+/** Flattened BSM core data in SI units (see j2735_codec.summarize_bsm). */
+export interface V2xBsmSummary {
+	id: string | null;
+	msg_cnt: number | null;
+	sec_mark: number | null;
+	lat: number | null;
+	lon: number | null;
+	elev_m: number | null;
+	speed_mps: number | null;
+	heading_deg: number | null;
+	brakes: boolean | null;
+	transmission: string | null;
+	size_m: { length: number | null; width: number | null } | null;
+	lights: V2xBsmLights | null;
+	coords: 'wgs84' | 'origin-relative' | 'unknown';
+	emergency?: boolean;
+	classification?: number;
+}
+
+export interface V2xMessageRow {
+	key: string;
+	seq: number;
+	t_rx: number;
+	msg_type: string;
+	source: 'tena' | 'udp';
+	sender: string | null;
+	uuid: string | null;
+	raw_hex: string;
+	size: number;
+	summary: V2xBsmSummary | Record<string, unknown> | null;
+	error: string | null;
+	tx: string | null;
+	decoded?: unknown;
+}
+
+export interface V2xMessagesMessage extends DriveMessage {
+	type: 'v2x_messages';
+	dropped: number;
+	batch: V2xMessageRow[];
+}
+
+export interface V2xSubscribedMessage extends DriveMessage {
+	type: 'v2x_subscribed';
+	keys: string[];
+	detail: 'compact' | 'full';
+	unknown?: string[];
+}
+
+export interface V2xDecodedMessage extends DriveMessage {
+	type: 'v2x_decoded';
+	raw_hex: string;
+	msg_type: string;
+	decoded: unknown;
+	summary?: unknown;
+	error: string | null;
+}

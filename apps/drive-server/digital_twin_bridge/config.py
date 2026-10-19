@@ -96,6 +96,22 @@ class Config:
     VOICES_EGO_ROLE: str = ""          # e.g. "PATH-M-1": first session's ego takes this role_name
     KEEP_VOICES_EGO: str = "1"         # "1": a VOICES-role ego survives session end; next session adopts it
 
+    # V2X message viewer: per-vehicle J2735 feeds from the DT (VOICES) stack.
+    V2X_FEED_ENABLED: str = "1"
+    V2X_JSON_STREAM_HOST: str = "127.0.0.1"   # the DT JSON streamer connects to us here
+    V2X_JSON_STREAM_PORT: int = 8005          # 0 disables the TCP listener
+    V2X_UDP_HOST: str = "127.0.0.1"           # raw UPER datagrams from the TENA V2X adapter
+    V2X_UDP_PORT: int = 5398                  # 0 disables the UDP tap
+    V2X_SCENARIO_XML: str = ""                # empty: resolve from ~/.dt_scenario_config
+    V2X_LOCAL_ORG: str = "PATH"
+    V2X_REGISTRY_EVERY_N_TICKS: int = 5       # vehicle table refresh cadence (20 Hz tick -> 4 Hz)
+    V2X_PUSH_INTERVAL_S: float = 0.1          # batching interval for v2x_messages pushes
+    V2X_QUEUE_MAX: int = 2000                 # per-connection buffered messages before dropping oldest
+    V2X_FEED_STALE_S: float = 3.0             # sender considered silent after this many seconds
+    V2X_DECODE_CACHE: int = 4096
+    V2X_STREAMER_AUTOLAUNCH: str = "1"        # relaunch DT's JSON streamer in dt-core when it is missing
+    V2X_STREAMER_CONTAINER: str = "dt-core"
+
     @classmethod
     def from_env(cls) -> "Config":
         """Create a Config instance from environment variables.
@@ -135,6 +151,14 @@ class Config:
     @property
     def voices_roles(self) -> tuple:
         return tuple(r.strip() for r in str(self.VOICES_EGO_ROLE or "").split(",") if r.strip())
+
+    @property
+    def v2x_feed_enabled(self) -> bool:
+        return _truthy(self.V2X_FEED_ENABLED)
+
+    @property
+    def v2x_streamer_autolaunch(self) -> bool:
+        return _truthy(self.V2X_STREAMER_AUTOLAUNCH)
 
     def setup_logging(self) -> None:
         """Configure the root logger based on ``LOG_LEVEL``."""

@@ -194,6 +194,7 @@ function recordWire(
 				p.ptype === 'telemetry' ||
 				p.ptype === 'camera_zoom' ||
 				p.ptype === 'camera_zoomed' ||
+				p.ptype === 'v2x_messages' ||
 				p.kind === 'bin'
 		);
 		wireBuf.splice(evictIdx === -1 ? 0 : evictIdx, 1);
@@ -235,6 +236,46 @@ export function exportWireLog(): string {
 			)
 			.join('\n') + '\n'
 	);
+}
+
+// ── Extension hooks ──
+// Feature stores (e.g. the V2X message viewer) register handlers for their own
+// server message types instead of growing the switch below, and get told when
+// the socket goes away so they can drop per-connection state.
+
+export type DriveMessageHandler = (msg: DriveMessage) => void;
+const messageHandlers = new Map<string, DriveMessageHandler>();
+const disconnectHooks = new Set<() => void>();
+// High-rate bulk pushes are logged as a size marker rather than verbatim.
+const WIRE_SUMMARIZED_TYPES = new Set(['v2x_messages']);
+
+export function registerDriveMessageHandler(type: string, handler: DriveMessageHandler): () => void {
+	messageHandlers.set(type, handler);
+	return () => {
+		if (messageHandlers.get(type) === handler) messageHandlers.delete(type);
+	};
+}
+
+export function registerDisconnectHook(hook: () => void): () => void {
+	disconnectHooks.add(hook);
+	return () => {
+		disconnectHooks.delete(hook);
+	};
+}
+
+function runDisconnectHooks(): void {
+	for (const hook of disconnectHooks) {
+		try {
+			hook();
+		} catch (e) {
+			console.warn('[DriveWS] disconnect hook failed:', e);
+		}
+	}
+}
+
+/** Send a raw message on the drive socket (feature stores use this for their own request types). */
+export function sendDriveMessage(msg: DriveMessage): boolean {
+	return send(msg);
 }
 
 // ── WebSocket ──
@@ -283,7 +324,14 @@ export function connect(wsUrl: string): void {
 		// Text message = JSON (telemetry, session events, errors)
 		try {
 			const msg: DriveMessage = JSON.parse(event.data);
-			recordWire('RX', 'json', typeof msg.type === 'string' ? msg.type : '?', event.data);
+			const msgType = typeof msg.type === 'string' ? msg.type : '?';
+			if (WIRE_SUMMARIZED_TYPES.has(msgType)) {
+				// V2X message batches arrive up to 10x/s per client and can be kilobytes
+				// each; a size marker keeps the wire log readable.
+				recordWire('RX', 'json', msgType, `[${msgType} ${event.data.length} chars]`, event.data.length);
+			} else {
+				recordWire('RX', 'json', msgType, event.data);
+			}
 			handleServerMessage(msg);
 		} catch (e) {
 			recordWire('RX', 'json', 'unparsed', String(event.data));
@@ -296,6 +344,7 @@ export function connect(wsUrl: string): void {
 		recordWire('EVT', 'evt', 'close', 'connection CLOSED');
 		ws = null;
 		driveConnected.set(false);
+		runDisconnectHooks();
 		console.log('[DriveWS] Disconnected');
 		if (get(teleportStatus).state === 'pending') {
 			setTeleportError('Connection closed before the teleport was acknowledged.');
@@ -331,6 +380,7 @@ export function disconnect(): void {
 		socket.close();
 	}
 	driveConnected.set(false);
+	runDisconnectHooks();
 	sessionState.set('idle');
 	vehicleId.set(null);
 	dynamicActors.set([]);
@@ -627,8 +677,14 @@ function handleServerMessage(msg: DriveMessage): void {
 			}
 			break;
 
-		default:
-			console.warn('[DriveWS] Unknown message type:', msg.type);
+		default: {
+			const handler = typeof msg.type === 'string' ? messageHandlers.get(msg.type) : undefined;
+			if (handler) {
+				handler(msg);
+			} else {
+				console.warn('[DriveWS] Unknown message type:', msg.type);
+			}
+		}
 	}
 }
 

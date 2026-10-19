@@ -2520,6 +2520,17 @@ def active_session_count() -> int:
     )
 
 
+def session_ego_ids() -> dict:
+    """Actor id -> session marker for every browser ego currently alive (V2X viewer registry)."""
+    egos = {}
+    for session in _active_sessions:
+        vehicle = getattr(session, "vehicle", None)
+        actor_id = getattr(vehicle, "id", None)
+        if isinstance(actor_id, int):
+            egos[actor_id] = id(session)
+    return egos
+
+
 async def serve_drive(
     websocket,
     world,
@@ -2532,9 +2543,15 @@ async def serve_drive(
     scene_fetch_timeout_seconds: float = DEFAULT_SCENE_FETCH_TIMEOUT_SECONDS,
     scene_fetch_max_pages: int = DEFAULT_SCENE_FETCH_MAX_PAGES,
     scene_fetch_max_items: int = DEFAULT_SCENE_FETCH_MAX_ITEMS,
+    v2x=None,
 ):
     """
     Handle a single WebSocket connection for driving.
+
+    ``v2x`` is the server-wide V2X message viewer context (feed hub, vehicle
+    registry, decoder).  Each connection gets its own subscription and push
+    task; ``v2x_*`` requests are answered by the viewer, everything else by
+    ``handle_message``.
 
     Multiplayer: each connection gets its own vehicle, camera, and frame stream
     in the same CARLA world. All players see each other's cars.
@@ -2608,6 +2625,18 @@ async def serve_drive(
         except Exception as e:
             logger.debug("OpenSCENARIO subscribe failed: %s", e)
 
+    # V2X message viewer: one subscription + push task per connection.
+    v2x_viewer = None
+    v2x_task = None
+    if v2x is not None:
+        try:
+            from digital_twin_bridge.v2x_viewer import V2xViewerConn
+            v2x_viewer = V2xViewerConn(v2x, websocket)
+            v2x_task = asyncio.create_task(v2x_viewer.pump())
+        except Exception as e:
+            logger.debug("V2X viewer setup failed: %s", e)
+            v2x_viewer = None
+
     _active_sessions.append(session)
     try:
         async for raw_message in websocket:
@@ -2615,7 +2644,15 @@ async def serve_drive(
                 continue
 
             msg = json.loads(raw_message)
-            response = await handle_message(session, msg, map_controller=map_controller)
+            response = None
+            if v2x_viewer is not None and str(msg.get("type", "")).startswith("v2x_"):
+                try:
+                    response = await v2x_viewer.handle(msg)
+                except Exception as e:
+                    logger.error("V2X viewer error for %s: %s", msg.get("type"), e, exc_info=True)
+                    response = {"type": "error", "message": str(e)}
+            if response is None:
+                response = await handle_message(session, msg, map_controller=map_controller)
             await websocket.send(json.dumps(response))
 
             # Start frame streaming once the session becomes active.
@@ -2643,6 +2680,15 @@ async def serve_drive(
                 pass
         if openscenario_runner is not None and xosc_queue is not None:
             openscenario_runner.unsubscribe(xosc_queue)
+
+        if v2x_viewer is not None:
+            v2x_viewer.close()
+        if v2x_task is not None:
+            v2x_task.cancel()
+            try:
+                await v2x_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
         session._force_cleanup()
         if session in _active_sessions:

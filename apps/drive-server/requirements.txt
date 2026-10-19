@@ -5,3 +5,6 @@ requests
 websockets
 pytest
 pytest-asyncio
+# V2X message viewer: SAE J2735 (2024) decoder (USDOT FHWA STOL, Apache-2.0) on pycrate
+pycrate>=0.7.11
+j2735_202409 @ https://github.com/usdot-fhwa-stol/j2735_202409/raw/60bace1c60686e6500865e77f722a9a0ba95b996/dist/j2735_202409-0.1.0-py3-none-any.whl

@@ -34,7 +34,7 @@ import websockets
 from digital_twin_bridge.config import Config
 from digital_twin_bridge.carla_connection import CarlaConnection, drive_map_status
 from digital_twin_bridge.detections_api import make_history_fetcher
-from digital_twin_bridge.drive_server import serve_drive, active_session_count
+from digital_twin_bridge.drive_server import serve_drive, active_session_count, session_ego_ids
 from digital_twin_bridge.actor_ownership import is_drive_owned  # coexist branch
 from digital_twin_bridge.object_registry import ObjectRegistry
 from digital_twin_bridge.publisher import StatePublisher
@@ -352,6 +352,9 @@ class DriveMapController:
                 self._config,
                 self._conn.world,
             )
+            v2x_ctx = self._runtime.get("v2x")
+            if v2x_ctx is not None and v2x_ctx.registry is not None:
+                v2x_ctx.registry.reset()
 
             try:
                 await loop.run_in_executor(None, export_current_map_data, self._conn, self._config, self._publisher)
@@ -413,6 +416,41 @@ async def main():
         "trajectory_player": trajectory_player,
         "openscenario_runner": openscenario_runner,
     }
+
+    # ── V2X message viewer: J2735 feed from the DT stack (JSON streamer + UDP tap) ──
+    v2x_ctx = None
+    if config.v2x_feed_enabled:
+        try:
+            from digital_twin_bridge.j2735_codec import Codec
+            from digital_twin_bridge.scenario_roster import ScenarioRoster
+            from digital_twin_bridge.v2x_feed import JsonStreamSource, StreamerKeeper, UdpUperSource, V2xHub
+            from digital_twin_bridge.v2x_registry import VehicleRegistry
+            from digital_twin_bridge.v2x_viewer import V2xContext
+
+            v2x_codec = Codec(cache_size=config.V2X_DECODE_CACHE)
+            v2x_roster = ScenarioRoster(xml_path=config.V2X_SCENARIO_XML, local_org=config.V2X_LOCAL_ORG)
+            v2x_hub = V2xHub(roster=v2x_roster, stale_s=config.V2X_FEED_STALE_S, queue_max=config.V2X_QUEUE_MAX)
+            v2x_registry = VehicleRegistry(v2x_roster, v2x_hub, local_org=config.V2X_LOCAL_ORG)
+            v2x_json = None
+            v2x_udp = None
+            if config.V2X_JSON_STREAM_PORT > 0:
+                v2x_json = JsonStreamSource(config.V2X_JSON_STREAM_HOST, config.V2X_JSON_STREAM_PORT,
+                                            asyncio.get_running_loop(), v2x_hub.on_record)
+                v2x_json.start()
+                v2x_hub.register_source("json_stream", v2x_json)
+            if config.V2X_UDP_PORT > 0:
+                v2x_udp = UdpUperSource(config.V2X_UDP_HOST, config.V2X_UDP_PORT, v2x_hub.on_datagram)
+                await v2x_udp.start()
+                v2x_hub.register_source("udp", v2x_udp)
+            v2x_keeper = StreamerKeeper(container=config.V2X_STREAMER_CONTAINER) if config.v2x_streamer_autolaunch else None
+            v2x_ctx = V2xContext(v2x_hub, v2x_registry, v2x_codec, v2x_roster,
+                                 push_interval_s=config.V2X_PUSH_INTERVAL_S, keeper=v2x_keeper,
+                                 json_source=v2x_json, udp_source=v2x_udp)
+            runtime["v2x"] = v2x_ctx
+        except Exception:
+            logger.warning("V2X feed setup failed; the message viewer is disabled", exc_info=True)
+            v2x_ctx = None
+
     map_controller = DriveMapController(conn, config, runtime, publisher)
 
     # ── Drive server setup ──
@@ -619,6 +657,7 @@ async def main():
             scene_fetch_timeout_seconds=config.SCENE_FETCH_TOTAL_TIMEOUT_SECONDS,
             scene_fetch_max_pages=config.SCENE_FETCH_MAX_PAGES,
             scene_fetch_max_items=config.SCENE_FETCH_MAX_ITEMS,
+            v2x=runtime.get("v2x"),
         )
 
     async def tick_loop():
@@ -635,6 +674,8 @@ async def main():
         loop = asyncio.get_running_loop()
         target_dt = 0.05
         was_running = False
+        tick_counter = 0
+        registry_every = max(1, int(config.V2X_REGISTRY_EVERY_N_TICKS))
         while True:
             world = runtime["world"]
             trajectory_player = runtime["trajectory_player"]
@@ -666,6 +707,18 @@ async def main():
                 trajectory_player.tick()
             except Exception as e:
                 logger.warning("trajectory_player.tick() failed: %s", e)
+            # V2X viewer: refresh the vehicle table off the loop every few ticks.
+            tick_counter += 1
+            v2x_ctx = runtime.get("v2x")
+            if v2x_ctx is not None and tick_counter % registry_every == 0:
+                try:
+                    from digital_twin_bridge.drive_server import _dynamic_actor_ids, _traffic_actor_ids
+                    await loop.run_in_executor(
+                        None, v2x_ctx.registry.refresh, world, session_ego_ids(),
+                        set(_traffic_actor_ids), set(_dynamic_actor_ids),
+                    )
+                except Exception as e:
+                    logger.debug("V2X registry refresh failed: %s", e)
             elapsed = loop.time() - start
             await asyncio.sleep(max(0.0, target_dt - elapsed))
 
@@ -736,6 +789,14 @@ async def main():
     logger.info("  V2X props   : session-owned historical reconstruction")
     logger.info("  State source: metadata-only V2X registry (no prop spawning)")
     logger.info("  State pub   : %s", publisher.describe() if publisher else "disabled")
+    if v2x_ctx is not None:
+        logger.info("  V2X feed    : json stream %s:%d, udp %s:%d, decoder %s, roster %s",
+                    config.V2X_JSON_STREAM_HOST, config.V2X_JSON_STREAM_PORT,
+                    config.V2X_UDP_HOST, config.V2X_UDP_PORT,
+                    "ok" if v2x_ctx.codec.available else "missing",
+                    v2x_ctx.roster.status().get("file") or "no scenario xml")
+    else:
+        logger.info("  V2X feed    : disabled")
     logger.info("=" * 60)
 
     tick_task = None
@@ -745,6 +806,8 @@ async def main():
     try:
         tick_task = asyncio.create_task(tick_loop())
         audit_task = asyncio.create_task(periodic_actor_audit())
+        if v2x_ctx is not None and v2x_ctx.keeper is not None:
+            v2x_ctx.keeper.start()
 
         # Publish state.json locally so the web dashboard stays live
         if publisher is not None:
@@ -789,6 +852,19 @@ async def main():
             runtime["openscenario_runner"].stop()
         except Exception as e:
             logger.debug("OpenSCENARIO stop on shutdown failed: %s", e)
+
+        # Stop the V2X feed taps.
+        if v2x_ctx is not None:
+            for part in (v2x_ctx.keeper, v2x_ctx.json_source, v2x_ctx.udp_source):
+                try:
+                    if part is not None:
+                        part.stop()
+                except Exception as e:
+                    logger.debug("V2X feed stop failed: %s", e)
+            try:
+                v2x_ctx.codec.shutdown()
+            except Exception:
+                pass
 
         conn.disconnect()
         logger.info("Unified server stopped")

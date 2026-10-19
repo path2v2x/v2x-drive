@@ -69,6 +69,14 @@ else
 fi
 remote_as_app "cd $CHECKOUT/apps/drive-web && npm run build --silent"
 
+step "Drive server dependencies"
+if [ "$before" = "$after" ] || remote_as_app git -C "$CHECKOUT" diff --quiet "$before" "$after" -- apps/drive-server/requirements.txt; then
+  echo "  requirements.txt unchanged; skipping pip install"
+else
+  # The venv the systemd unit runs (scripts/systemd/v2x-drive.service CARLA_PYTHON).
+  remote_as_app "cd $CHECKOUT/apps/drive-server && /home/path/V2XCarla/carla-venv-310/bin/python -m pip install -q -r requirements.txt"
+fi
+
 step "Publish site"
 remote "rsync -a --delete $CHECKOUT/apps/drive-web/build/ $SITE_ROOT/ && chown -R www-data:www-data $SITE_ROOT"
 remote "install -o $APP_USER -g $APP_USER -d $DATA_ROOT $DATA_ROOT/api $DATA_ROOT/snapshots $DATA_ROOT/demo-videos"
