@@ -98,6 +98,49 @@ def test_hub_routes_records_and_tracks_senders(tmp_path):
     assert hub.vehicle_state("PATH-M-1") is None
 
 
+def test_duplicate_tena_messages_are_dropped_by_uuid():
+    hub = V2xHub(stale_s=3.0)
+    raw = load_hex("20261015_PATHBG1_1.hex")
+    assert hub.publish(FeedMessage("PATH-BG-1", "BSM", raw, "tena", 100.0, uuid="u1"))
+    assert not hub.publish(FeedMessage("PATH-BG-1", "BSM", raw, "tena", 100.01, uuid="u1"))  # second streamer
+    assert hub.publish(FeedMessage("PATH-BG-1", "BSM", raw, "tena", 100.1, uuid="u2"))
+    assert hub.publish(FeedMessage("PATH-BG-1", "BSM", raw, "tena", 100.2))               # no uuid: kept
+    feed = hub.sender_feed("PATH-BG-1", 100.3)
+    assert feed["count"] == 3 and feed["duplicates"] == 1
+
+
+def test_streamer_keeper_waits_for_a_young_container(monkeypatch):
+    from digital_twin_bridge.v2x_feed import StreamerKeeper
+    keeper = StreamerKeeper(container="dt-core")
+    calls = []
+
+    class Res:
+        def __init__(self, stdout="", returncode=0):
+            self.stdout, self.returncode = stdout, returncode
+
+    def fake_run(args, timeout=10.0):
+        calls.append(args)
+        if args[:2] == ["docker", "ps"]:
+            return Res("dt-core\ncarla-rr-maps\n")
+        if "pgrep" in args:
+            return Res("", 1)                     # no streamer
+        if "inspect" in args:
+            from datetime import datetime, timezone, timedelta
+            started = datetime.now(timezone.utc) - timedelta(seconds=fake_run.age)
+            return Res(started.strftime("%Y-%m-%dT%H:%M:%S.123456789Z"))
+        return Res()
+
+    fake_run.age = 30.0
+    monkeypatch.setattr(keeper, "_run_cmd", fake_run)
+    result = keeper.check_once()
+    assert result["dt_running"] and not result["streamer_running"] and not result["launched"]
+    assert keeper.launches == 0 and result["container_age_s"] == 30
+    fake_run.age = 600.0
+    result = keeper.check_once()
+    assert result["launched"] and keeper.launches == 1
+    assert any("exec" in a and "-d" in a for a in calls)
+
+
 async def test_subscription_queue_is_bounded_and_only_gets_wanted_keys():
     hub = V2xHub(stale_s=3.0, queue_max=20)
     sub = hub.subscribe()

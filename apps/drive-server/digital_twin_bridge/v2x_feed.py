@@ -176,6 +176,8 @@ class _SenderStats:
     last_raw_t: float = 0.0
     window: _RateWindow = field(default_factory=_RateWindow)
     msg_types: Dict[str, int] = field(default_factory=dict)
+    recent_uuids: collections.deque = field(default_factory=lambda: collections.deque(maxlen=64))
+    duplicates: int = 0
 
 
 class V2xSubscription:
@@ -246,6 +248,13 @@ class V2xHub:
             stats.last_udp = msg.t_rx
         else:
             stats.last_tena = msg.t_rx
+            if msg.uuid is not None:
+                # two streamer processes (DT's own and a keeper relaunch) deliver every
+                # TENA message twice; the message uuid identifies a repeat
+                if msg.uuid in stats.recent_uuids:
+                    stats.duplicates += 1
+                    return False
+                stats.recent_uuids.append(msg.uuid)
         self._seq += 1
         msg.seq = self._seq
         stats.count += 1
@@ -317,6 +326,7 @@ class V2xHub:
             "rate_hz": round(stats.window.rate(now), 1),
             "count": stats.count,
             "types": dict(stats.msg_types),
+            "duplicates": stats.duplicates,
         }
 
     def senders(self) -> list:
@@ -519,6 +529,10 @@ class StreamerKeeper:
     DT's own launcher script when needed (never more than once a minute).
     """
 
+    # DT's own startup launches the streamer during the first couple of minutes of a
+    # session; relaunching before that would run two streamers (every message twice).
+    CONTAINER_GRACE_S = 180.0
+
     def __init__(self, container: str = "dt-core", interval_s: float = 20.0,
                  launcher: str = "$HOME/distributed-testing/scripts/run_scripts/start-json-streamer.sh"):
         self.container = container
@@ -528,6 +542,21 @@ class StreamerKeeper:
         self.launches = 0
         self.last_check: Optional[dict] = None
         self._task: Optional[asyncio.Task] = None
+
+    def _container_age_s(self) -> Optional[float]:
+        """Seconds since the DT container started, None when unknown."""
+        try:
+            res = self._run_cmd(["docker", "inspect", "-f", "{{.State.StartedAt}}", self.container])
+            text = res.stdout.strip()
+            if res.returncode != 0 or not text:
+                return None
+            from datetime import datetime, timezone
+            # 2026-10-19T00:53:12.087438903Z -> trim to microseconds
+            head, _, frac = text.rstrip("Z").partition(".")
+            started = datetime.fromisoformat("%s.%s" % (head, (frac + "000000")[:6])).replace(tzinfo=timezone.utc)
+            return max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
+        except Exception:
+            return None
 
     def start(self) -> None:
         self._task = asyncio.get_running_loop().create_task(self._run())
@@ -559,7 +588,10 @@ class StreamerKeeper:
         if result["dt_running"]:
             pg = self._run_cmd(["docker", "exec", self.container, "pgrep", "-f", "jsonStreamer-VUG"])
             result["streamer_running"] = pg.returncode == 0
-            if not result["streamer_running"] and time.time() - self._last_launch > 60.0:
+            age = self._container_age_s()
+            result["container_age_s"] = round(age, 0) if age is not None else None
+            young = age is not None and age < self.CONTAINER_GRACE_S
+            if not result["streamer_running"] and not young and time.time() - self._last_launch > 60.0:
                 cmd = "source $HOME/start_scripts/setup-docker.sh >/dev/null 2>&1; %s" % self.launcher
                 self._run_cmd(["docker", "exec", "-d", self.container, "bash", "-lc", cmd])
                 self._last_launch = time.time()

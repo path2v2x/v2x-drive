@@ -11,25 +11,8 @@
  * W = go forward, S = go backward, Space = brake.
  */
 
-import { writable, get } from 'svelte/store';
+import { writable } from 'svelte/store';
 import type { NormalizedInput } from './gamepad';
-import { telemetry } from './driveSocket';
-
-// Speed-sensitive steering: at low speed the wheels can over-rotate the car
-// in CARLA's vehicle model (almost no lateral grip force to oppose them), so
-// we cap the maximum steering authority until the car has some forward
-// momentum. Below LOW_SPEED_FLOOR_KMH the cap is LOW_SPEED_STEER_CAP, ramping
-// linearly to HIGH_SPEED_STEER_CAP by FULL_STEER_SPEED_KMH.
-//
-// HIGH_SPEED_STEER_CAP matches CARLA's manual_control.py (line 616):
-//   self._steer_cache = min(0.7, max(-0.7, self._steer_cache))
-// — capping at 0.7 instead of 1.0 keeps lateral acceleration inside the
-// tire's grip envelope at speed, which is what makes that example feel
-// noticeably more planted than going to full lock.
-const LOW_SPEED_STEER_CAP = 0.4;
-const HIGH_SPEED_STEER_CAP = 0.7;
-const LOW_SPEED_FLOOR_KMH = 0;
-const FULL_STEER_SPEED_KMH = 25;
 
 export const keyboardActive = writable<boolean>(false);
 
@@ -98,15 +81,6 @@ function update() {
 	}
 	currentSteer = Math.max(-1, Math.min(1, currentSteer));
 
-	// Speed-sensitive steering cap — pulled from live telemetry.
-	const speedKmh = Math.abs(get(telemetry).speed ?? 0);
-	const t = Math.max(
-		0,
-		Math.min(1, (speedKmh - LOW_SPEED_FLOOR_KMH) / (FULL_STEER_SPEED_KMH - LOW_SPEED_FLOOR_KMH))
-	);
-	const steerCap = LOW_SPEED_STEER_CAP + (HIGH_SPEED_STEER_CAP - LOW_SPEED_STEER_CAP) * t;
-	const cookedSteer = Math.max(-steerCap, Math.min(steerCap, currentSteer));
-
 	// Throttle — CARLA-style: ramp up while held, instant 0 on release.
 	// W enters/keeps drive gear; S enters/keeps reverse gear. Releasing the
 	// throttle key drops throttle to 0 but the gear sticks so the car coasts.
@@ -137,7 +111,7 @@ function update() {
 	const throttle = gearReverse ? currentReverseThrottle : currentForwardThrottle;
 
 	keyboardInput.set({
-		steer: cookedSteer,
+		steer: currentSteer,
 		throttle,
 		brake: currentBrake,
 		reverse: gearReverse

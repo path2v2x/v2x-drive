@@ -180,11 +180,10 @@ export const normalizedInput = derived(
 		if (steer !== 0) {
 			steer = 0.55 * Math.tan(1.1 * steer);
 		}
-		// Cap at ±0.7 — matches manual_control.py line 616
-		// (`min(0.7, max(-0.7, steer))`). Full lock is 0.7, not 1.0,
-		// which is the single biggest reason that example feels grippier
-		// than ours did with raw ±1.0 steering.
-		steer = Math.max(-0.7, Math.min(0.7, steer));
+		// Full lock is the car's full lock: the ego's sweep-wheel collision and
+		// tire friction tweaks (drive_server.py) took care of the sliding that
+		// the old ±0.7 cap used to mask.
+		steer = Math.max(-1.0, Math.min(1.0, steer));
 
 		// Pedals
 		let throttle = normalizePedal($rawAxes[$cal.gasAxis] ?? 0, gas.rest);

@@ -710,8 +710,8 @@ class DriveSession:
             # tracks the wheel volume across each frame so it can't skip
             # over the road. Pair with a modest tire-friction bump above
             # the Tesla Model 3's stock 3.5 — the stock Tesla is on the
-            # slipperier end of CARLA's catalog and the ±0.7 steering cap
-            # alone wasn't quite enough to keep it planted at speed.
+            # slipperier end of CARLA's catalog; with full steering lock in the
+            # web client this is what keeps it planted at speed.
             try:
                 physics = self.vehicle.get_physics_control()
                 physics.use_sweep_wheel_collision = True
