@@ -118,6 +118,10 @@ class Config:
     FLEET_DECISION_EVERY_N_TICKS: int = 2     # behaviour decisions per vehicle at 20 Hz / N
     FLEET_TICK_BUDGET_MS: float = 20.0        # p95 fleet tick time before decisions slow down
     FLEET_LIGHT_SCAN_EVERY_N_TICKS: int = 10  # emergency light-state scan cadence
+    # Where the models learn about emergency vehicles: "bsm" (the TENA/UDP V2X feed),
+    # "lights" (CARLA Special1 light state of emergency blueprints), "fleet" (our own ERVs).
+    # "bsm" alone makes every reaction depend on real V2X messages.
+    FLEET_ERV_SOURCES: str = "bsm,lights,fleet"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -170,6 +174,10 @@ class Config:
     @property
     def fleet_enabled(self) -> bool:
         return _truthy(self.FLEET_ENABLED)
+
+    @property
+    def fleet_erv_sources(self) -> frozenset:
+        return frozenset(s.strip().lower() for s in str(self.FLEET_ERV_SOURCES or "").split(",") if s.strip())
 
     def setup_logging(self) -> None:
         """Configure the root logger based on ``LOG_LEVEL``."""

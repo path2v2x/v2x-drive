@@ -194,6 +194,11 @@ class Fleet:
         self._base_decision_every = self.decision_every
         self.budget_ms = float(getattr(config, "FLEET_TICK_BUDGET_MS", 20.0) or 20.0)
         self.light_scan_every = max(1, int(getattr(config, "FLEET_LIGHT_SCAN_EVERY_N_TICKS", 10) or 10))
+        sources = getattr(config, "fleet_erv_sources", None)
+        if sources is None:
+            raw = getattr(config, "FLEET_ERV_SOURCES", "bsm,lights,fleet")
+            sources = frozenset(s.strip().lower() for s in str(raw).split(",") if s.strip())
+        self.erv_sources = frozenset(sources)
         self._host = getattr(config, "CARLA_HOST", "localhost")
         self._port = int(getattr(config, "CARLA_PORT", 2000) or 2000)
         self._planner = planner
@@ -315,6 +320,7 @@ class Fleet:
             "decision_hz": round(20.0 / self.decision_every, 1),
             "tracks": len(self.tracker.tracks()),
             "events": self.events_total,
+            "erv_sources": sorted(self.erv_sources),
         }
 
     def list(self) -> dict:
@@ -738,7 +744,7 @@ class Fleet:
     def _update_tracker(self, now: float, table: Dict[int, VehicleSnap], refresh: bool) -> None:
         hub_actor_ids = set()
         for fv in self._vehicles.values():
-            if fv.kind != "erv":
+            if fv.kind != "erv" or "fleet" not in self.erv_sources:
                 continue
             s = table.get(fv.actor_id)
             if s is None:
@@ -752,7 +758,7 @@ class Fleet:
             self.tracker.update_from_lights("actor:%d" % fv.actor_id, fv.actor_id, s.x, s.y, s.yaw, s.speed,
                                             lights, now, role=fv.profile.role, source="fleet",
                                             fleet_state=state, siren=siren, response_type=response)
-        if self._hub_source is not None and self._tick_i % self.decision_every == 0:
+        if self._hub_source is not None and "bsm" in self.erv_sources and self._tick_i % self.decision_every == 0:
             def pose_of(actor_id):
                 s = table.get(actor_id)
                 return (s.x, s.y, s.yaw) if s is not None else None
@@ -761,7 +767,7 @@ class Fleet:
             except Exception as exc:
                 logger.debug("hub ERV source failed: %s", exc)
             hub_actor_ids = {t.actor_id for t in self.tracker.tracks() if t.source == "bsm" and t.actor_id is not None}
-        if refresh:
+        if refresh and "lights" in self.erv_sources:
             vehicles = [(s.actor, s.x, s.y, s.yaw, s.speed) for s in table.values() if not s.is_fleet]
             try:
                 self._light_source.update(self.tracker, now, vehicles, exclude_ids=hub_actor_ids | self.actor_ids())

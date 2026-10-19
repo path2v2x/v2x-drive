@@ -315,6 +315,24 @@ def test_stuck_vehicles_are_rerouted_then_moved_then_removed(fleet, mock_world):
     assert not fleet.has_vehicles and actor.is_destroyed
 
 
+def test_bsm_only_sources_ignore_lights_and_fleet_ervs(mock_world):
+    fmap = FakeMap()
+    cfg = types.SimpleNamespace(FLEET_MAX_VEHICLES=3, FLEET_DECISION_EVERY_N_TICKS=1, FLEET_TICK_BUDGET_MS=20.0,
+                                FLEET_LIGHT_SCAN_EVERY_N_TICKS=2, FLEET_ERV_SOURCES="bsm", CARLA_HOST="localhost", CARLA_PORT=2000)
+    f = Fleet(mock_world, fmap, cfg, planner=FakePlanner(fmap), agent_factory=FakeAgent, client_factory=lambda: None, now_fn=Clock())
+    assert f.erv_sources == frozenset({"bsm"}) and f.stats()["erv_sources"] == ["bsm"]
+    bp = types.SimpleNamespace(id="vehicle.ambulance.ford", _attributes={"role_name": "PATH-M-1"})
+    amb = mock_world.try_spawn_actor(bp, carla.Transform(carla.Location(x=-200, y=0, z=0.5), carla.Rotation(yaw=0.0)))
+    amb.get_light_state = lambda: 1 << 9
+    place(amb, -200.0, speed=10.0)
+    f.spawn("ambulance", spawn={"x": -100, "y": 0})
+    civ = f.spawn("civilian", spawn={"x": 120, "y": 0})["vehicle"]
+    for _ in range(4):
+        f.tick()
+    assert f.erv_tracks() == []                                   # neither light states nor our own ERV count
+    assert f._vehicles[civ["actor_id"]].state() == "NORMAL"
+
+
 def test_external_emergency_lights_feed_the_tracker_and_advisories(fleet, mock_world):
     bp = types.SimpleNamespace(id="vehicle.ambulance.ford", _attributes={"role_name": "PATH-M-1"})
     amb = mock_world.try_spawn_actor(bp, carla.Transform(carla.Location(x=0, y=0, z=0.5), carla.Rotation(yaw=0.0)))

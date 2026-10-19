@@ -935,7 +935,7 @@ class DriveSession:
         self._draw_dynamic_actor_geofences()
         eva_alerts = self._check_emergency_vehicle_proximity()
         yield_alerts = self._check_yield_to_firetruck()
-        all_alerts = eva_alerts + yield_alerts + self._check_erv_advisories()
+        all_alerts = eva_alerts + yield_alerts
         if all_alerts:
             telemetry["v2x_alerts"] = all_alerts
         return telemetry
@@ -1963,52 +1963,6 @@ class DriveSession:
             if tid not in seen_truck_ids:
                 del self._in_front_since[tid]
 
-        return alerts
-
-    def _check_erv_advisories(self) -> list[dict]:
-        """Advisory toasts for the human driver from the fleet's ERV tracker.
-
-        The tracker knows every emergency vehicle with lights on: our own
-        fleet ERVs, VOICES vehicles through their BSM Part II flags and any
-        emergency-blueprint car whose Special1 light is on (a DT driver
-        pressing Ctrl+L).  Two advisories: an active ERV approaching from
-        behind (pull over) and a stopped ERV ahead (slow down, move over).
-        Ids stay stable per track so the browser updates the same toast.
-        """
-        if self._fleet is None or self.vehicle is None:
-            return []
-        try:
-            tracks = self._fleet.erv_tracks()
-        except Exception:
-            return []
-        if not tracks:
-            return []
-        from digital_twin_bridge.v2x_behaviors.geometry import relative_position, same_direction
-        tf = self.vehicle.get_transform()
-        ex, ey, eyaw = tf.location.x, tf.location.y, tf.rotation.yaw
-        alerts: list[dict] = []
-        for t in tracks:
-            if t.get("actor_id") == self.vehicle.id or t.get("x") is None:
-                continue
-            along, lateral = relative_position(ex, ey, eyaw, t["x"], t["y"])
-            dist = math.hypot(t["x"] - ex, t["y"] - ey)
-            if dist > 150.0:
-                continue
-            base_id = t.get("actor_id") if isinstance(t.get("actor_id"), int) else (hash(t.get("key")) % 1_000_000)
-            if t.get("active") and along < 0 and abs(lateral) <= 8.0 and same_direction(eyaw, t.get("yaw") or eyaw, 45.0):
-                alerts.append({
-                    "id": 2_000_000 + base_id,
-                    "message": "Emergency vehicle approaching from behind, pull over",
-                    "signal_type": "warning",
-                    "distance": round(dist, 1),
-                })
-            elif t.get("stationary") and t.get("lights") and along > 0 and abs(lateral) <= 10.0:
-                alerts.append({
-                    "id": 3_000_000 + base_id,
-                    "message": "Stopped emergency vehicle ahead, slow down and move over",
-                    "signal_type": "alert",
-                    "distance": round(dist, 1),
-                })
         return alerts
 
     def _actor_kind(self, actor_id: int) -> str:
