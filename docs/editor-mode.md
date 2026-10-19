@@ -42,7 +42,7 @@ second, capped at 400 rows.
 | `camera_follow {actor_id \| null}` | `camera_pose` |
 | `list_world_actors {max}` | `world_actors {actors[], total, truncated, groups, following}` |
 | `inspect_actor {actor_id}` | `actor_details {…row, attributes, bbox, velocity, rot, control?, lights?, speed_limit?, parent_type}` |
-| `start_session {…, spawn: {x, y, yaw}}` (driving) | the car spawns on the lane nearest to that point |
+| `start_session {…, spawn: {x, y, yaw}}` (driving) | the car spawns on the lane nearest to that point (an adopted slot car is moved there) |
 
 Car-only actions (`control`, `teleport`, `respawn`, `camera_switch`,
 `camera_zoom`) answer `error {code: "needs_vehicle"}` in an editor session.

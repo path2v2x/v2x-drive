@@ -129,9 +129,10 @@ those names for the fleet and for browser sessions:
   Spawning the same slot again adopts the parked car; `release: true`
   destroys it. A browser ego under a slot is kept the same way when its
   session ends, and the fleet may adopt that car (and the other way round).
-* Parked cars are remembered in `DTB_VOICES_SLOT_FILE` (default
-  `~/.cache/v2x-drive/voices_slots.json`) by actor id and blueprint, so they
-  are adopted after a drive-server restart as well.
+* Slot cars are remembered in `DTB_VOICES_SLOT_FILE` (default
+  `~/.cache/v2x-drive/voices_slots.json`) by actor id and blueprint, while
+  they are driven as well as once parked, so the next drive server (after a
+  restart or a crash) adopts them instead of treating them as foreign.
 * `list_voices_slots` reports every slot as `free`, `kept`, `session`,
   `fleet` or `taken`. The start screen uses it for "publish to VOICES"
   (default slot `DTB_VOICES_SLOT_DEFAULT`, `PATH-BG-5`) and the fleet panel

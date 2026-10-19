@@ -457,7 +457,8 @@ class Fleet:
             self._actors_cache_tick = -10_000  # pick the new actor up next tick
             if role and self._slots is not None:
                 self._slots.hold(role, "fleet", marker=actor.id, actor_id=actor.id)
-                self._slots.keeper.forget(role)
+                # remembered while driven too: after a server restart the car can still be adopted
+                self._slots.keeper.remember(role, actor, "fleet")
             reason = "adopted" if adopt is not None else "spawned"
             logger.info("Fleet: %s %s %s (%s, actor %d) -> %s", reason, kind, name, bp_id, actor.id,
                         "(%.0f, %.0f)" % (dest.x, dest.y) if dest is not None else "roaming")

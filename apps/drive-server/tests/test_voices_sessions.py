@@ -43,7 +43,8 @@ async def test_slot_ego_is_kept_between_sessions_and_adopted(mock_world, fake_v2
     s2 = make_session(mock_world, fake_v2x_api, slots)
     ready = await s2.start(START, END, voices_role="PATH-BG-5")
     assert ready["vehicle_id"] == car.id and s2.vehicle is car and not car.control_history[-1].hand_brake
-    assert slots.keeper.record("PATH-BG-5") is None and slots.holder("PATH-BG-5").by == "session"
+    # remembered while driven too, so a drive-server restart can adopt it
+    assert slots.keeper.record("PATH-BG-5")["actor_id"] == car.id and slots.holder("PATH-BG-5").by == "session"
 
     # a third session cannot take the slot while the second drives
     s3 = make_session(mock_world, fake_v2x_api, slots)
@@ -88,3 +89,26 @@ async def test_sessions_without_a_slot_service_keep_the_legacy_behaviour(mock_wo
     assert status == {"type": "voices_slots", "slots": [], "local_org": "", "default": "", "available": False,
                       "scenario": ""}
     session.end()
+
+
+@pytest.mark.asyncio
+async def test_a_slot_car_driven_at_a_restart_is_adopted_by_the_next_server(mock_world, fake_v2x_api, tmp_path):
+    path = str(tmp_path / "voices_slots.json")
+    before = SlotService(keeper=SlotKeeper(path=path), config_roles=("PATH-BG-5",), default_slot="PATH-BG-5")
+    s1 = make_session(mock_world, fake_v2x_api, before)
+    await s1.start(START, END, voices_role="PATH-BG-5")
+    car = s1.vehicle
+    rec = before.keeper.record("PATH-BG-5")
+    assert rec["actor_id"] == car.id and rec["by"] == "session" and rec["type_id"] == getattr(car, "type_id", "")
+
+    # the drive server restarts while the car is driven: the holders are gone, the file is not
+    after = SlotService(keeper=SlotKeeper(path=path), config_roles=("PATH-BG-5",), default_slot="PATH-BG-5")
+    assert {s["name"]: s["state"] for s in after.states(mock_world)}["PATH-BG-5"] == "kept"
+    s2 = make_session(mock_world, fake_v2x_api, after)
+    ready = await s2.start(START, END, voices_role="PATH-BG-5", spawn={"x": 123.0, "y": -45.0, "yaw": 30.0})
+    assert ready["vehicle_id"] == car.id and s2.vehicle is car
+    # an adopted car starts at the requested pose (switching over from the editor camera)
+    tf = car.get_transform()
+    assert (tf.location.x, tf.location.y, tf.rotation.yaw) == (123.0, -45.0, 30.0)
+    s2.end()
+    assert not car.is_destroyed and after.keeper.record("PATH-BG-5")["by"] == "session"

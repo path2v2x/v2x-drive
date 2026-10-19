@@ -678,6 +678,27 @@ class DriveSession:
             return tuple(self._slots.names())
         return _voices_roles()
 
+    def _requested_spawn_transform(self, spawn):
+        """The lane pose nearest to a requested ``{x, y, z?, yaw?}``, or None when there is none."""
+        if not isinstance(spawn, dict):
+            return None
+        try:
+            import carla
+            loc = carla.Location(x=float(spawn.get("x", 0.0)), y=float(spawn.get("y", 0.0)),
+                                 z=float(spawn.get("z", 0.0)))
+            wp = self._map.get_waypoint(loc, project_to_road=True)
+            if wp is None:
+                return None
+            yaw = spawn.get("yaw")
+            return carla.Transform(
+                carla.Location(x=wp.transform.location.x, y=wp.transform.location.y,
+                               z=wp.transform.location.z + 0.5),
+                carla.Rotation(yaw=float(yaw) if isinstance(yaw, (int, float)) else wp.transform.rotation.yaw),
+            )
+        except Exception as e:
+            logger.debug("Requested spawn pose unusable, using a spawn point: %s", e)
+            return None
+
     async def start(self, start: str, end: str, vehicle_blueprint: str = DEFAULT_VEHICLE,
                     voices_role: Optional[str] = None, spawn: Optional[dict] = None) -> dict:
         """Start a driving session: reconstruct scene, spawn vehicle, attach camera.
@@ -732,31 +753,23 @@ class DriveSession:
                 raise RuntimeError("No spawn points available")
 
             random.shuffle(spawn_points)
+            # a requested pose (switching over from the editor camera) goes first, for an
+            # adopted slot car as well as for a new one; the spawn points are the fallback
+            requested_tf = self._requested_spawn_transform(spawn)
+            first_tf = requested_tf if requested_tf is not None else spawn_points[0]
             self.vehicle = None
             if adopt is not None:
-                reset_adopted_actor(adopt, spawn_points[0])
+                reset_adopted_actor(adopt, first_tf)
                 logger.info("Adopted parked VOICES car %s (actor id %d)", self._voices_role, adopt.id)
                 self.vehicle = adopt
             elif self._voices_role and self._slots is None:
                 # coexist: reuse the car a previous session left under this role
-                self.vehicle = _adopt_kept_ego(self._world, self._voices_role, spawn_points[0])
-            if self.vehicle is None and isinstance(spawn, dict):
-                # a requested pose (switching over from the editor camera): the lane nearest to it
-                try:
-                    import carla
-                    loc = carla.Location(x=float(spawn.get("x", 0.0)), y=float(spawn.get("y", 0.0)),
-                                         z=float(spawn.get("z", 0.0)))
-                    wp = self._map.get_waypoint(loc, project_to_road=True)
-                    if wp is not None:
-                        yaw = spawn.get("yaw")
-                        tf = carla.Transform(
-                            carla.Location(x=wp.transform.location.x, y=wp.transform.location.y,
-                                           z=wp.transform.location.z + 0.5),
-                            carla.Rotation(yaw=float(yaw) if isinstance(yaw, (int, float)) else wp.transform.rotation.yaw),
-                        )
-                        self.vehicle = self._world.try_spawn_actor(ego_bp, tf)
-                except Exception as e:
-                    logger.debug("Requested spawn pose failed, using a spawn point: %s", e)
+                self.vehicle = _adopt_kept_ego(self._world, self._voices_role, first_tf)
+            if self.vehicle is None and requested_tf is not None:
+                self.vehicle = self._world.try_spawn_actor(ego_bp, requested_tf)
+                if self.vehicle is None:
+                    logger.info("Requested spawn pose (%.1f, %.1f) is blocked, using a spawn point",
+                                requested_tf.location.x, requested_tf.location.y)
             if self.vehicle is None:
                 for sp in spawn_points:
                     self.vehicle = self._world.try_spawn_actor(ego_bp, sp)
@@ -766,7 +779,8 @@ class DriveSession:
                 raise RuntimeError("Failed to spawn vehicle")
             if self._voices_role and self._slots is not None:
                 self._slots.hold(self._voices_role, "session", marker=id(self), actor_id=self.vehicle.id)
-                self._slots.keeper.forget(self._voices_role)
+                # remembered while driven too: after a server restart the car can still be adopted
+                self._slots.keeper.remember(self._voices_role, self.vehicle, "session")
 
             # Physics power cap removed — vehicle runs at stock max_rpm / torque curve.
 

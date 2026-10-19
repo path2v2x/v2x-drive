@@ -84,7 +84,7 @@ async def test_slot_car_is_parked_not_destroyed_and_adopted_again(fleet, mock_wo
     assert reply["vehicle"]["actor_id"] == actor.id and reply["vehicle"]["parked"] is False
     assert reply["vehicle"]["state"] == initial_state and reply["count"] == 1
     assert actor.get_transform().location.x == 100.0 and actor.get_transform().location.y == 0.0
-    assert slots.holder("PATH-M-1").by == "fleet" and slots.keeper.record("PATH-M-1") is None
+    assert slots.holder("PATH-M-1").by == "fleet" and slots.keeper.record("PATH-M-1")["actor_id"] == actor.id
     assert len(fleet._vehicles) == 1
     # the controller waits a few ticks for the teleport to show up in the world snapshot
     fleet.tick()
@@ -210,3 +210,16 @@ def test_unroutable_spots_are_refused_and_binding_retries_once(mock_world):
     fv = f2._vehicles[v["actor_id"]]
     assert fv.agent is not None and [p[0] for p in fv.agent.plans] == ["failed", "to"]
     assert fv.destination.x == fv.last_snap.x + 500.0  # routed again from where the car stands
+
+
+def test_a_slot_car_driven_at_a_restart_is_adoptable_by_the_next_server(fleet, mock_world, tmp_path):
+    path = str(tmp_path / "voices_slots.json")
+    fleet._slots = SlotService(keeper=SlotKeeper(path=path), config_roles=("PATH-M-1",))
+    v = fleet.spawn("ambulance", spawn={"x": 10, "y": 0}, role="PATH-M-1")["vehicle"]
+    actor = mock_world.get_actor(v["actor_id"])
+    rec = fleet._slots.keeper.record("PATH-M-1")
+    assert rec["actor_id"] == actor.id and rec["by"] == "fleet"
+    # a new server (fresh holders, the same file) finds the car kept, not taken by a foreign program
+    restarted = SlotService(keeper=SlotKeeper(path=path), config_roles=("PATH-M-1",))
+    assert {s["name"]: s["state"] for s in restarted.states(mock_world)}["PATH-M-1"] == "kept"
+    assert restarted.claim(mock_world, "PATH-M-1", by="fleet") is actor
