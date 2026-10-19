@@ -27,7 +27,10 @@ The fleet keeps an **ERV tracker** fed by three sources:
 
 A track is *active* when siren and lights are on, *stationary* on
 `responseType stationary` or after a minute below 5 km/h, and expires 15 s
-after its last update.
+after its last update. `DTB_FLEET_ERV_SOURCES` picks the sources
+(`bsm,lights,fleet` by default); `bsm` alone makes every reaction depend on
+real V2X messages, which is the setting for a VOICES run where the ERV
+(PATH-M-1) publishes through the adapter.
 
 ## Civilian behaviour (CARMA / state statutes / FHWA, adapted to RFS)
 
