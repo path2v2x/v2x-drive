@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { goto } from '$app/navigation';
 	import type { CameraView, DriveMapId, DriveMapOption, SpawnableObject, VoicesSlot } from '$lib/types';
 
 	import {
@@ -160,6 +161,8 @@
 	});
 	let hudWidth = $derived(hudMode === 'pygame' && hudVisible ? '300px' : '0px');
 	let railWidth = $derived(hudMode === 'pygame' ? '172px' : '0px');
+	// Coming back from the editor: start the next drive near its camera (?x=&y=&yaw=).
+	let pendingSpawn = $state<{ x: number; y: number; yaw?: number } | null>(null);
 	let showXoscPicker = $state(false);
 
 	// Split-panel width for the right-side map (px). Persisted in localStorage.
@@ -339,6 +342,15 @@
 	onMount(async () => {
 		startPolling();
 		startKeyboardInput();
+		if (typeof window !== 'undefined') {
+			const params = new URLSearchParams(window.location.search);
+			const x = Number(params.get('x'));
+			const y = Number(params.get('y'));
+			if (params.has('x') && params.has('y') && Number.isFinite(x) && Number.isFinite(y)) {
+				const yaw = Number(params.get('yaw'));
+				pendingSpawn = { x, y, ...(params.has('yaw') && Number.isFinite(yaw) ? { yaw } : {}) };
+			}
+		}
 		const config = await loadRuntimeConfig();
 		driveWsUrl = resolveWsUrl(config.wsUrl);
 		if (driveWsUrl) connect(driveWsUrl);
@@ -380,7 +392,8 @@
 		}
 		const now = new Date();
 		const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-		startSession(oneHourAgo.toISOString(), now.toISOString(), selectedVehicle, voicesEnabled ? voicesSlot : '');
+		startSession(oneHourAgo.toISOString(), now.toISOString(), selectedVehicle, voicesEnabled ? voicesSlot : '', pendingSpawn ?? undefined);
+		pendingSpawn = null;
 	}
 
 	function handleSaveScenario() {
@@ -487,7 +500,24 @@
 		switchCamera(view);
 	}
 
-	// ── side rails (pygame HUD mode) ──
+	/** End this drive and open the editor with its camera just behind the car. */
+	function switchToEditor() {
+		const t = currentTelemetry;
+		const yaw = t.rot[1];
+		const rad = (yaw * Math.PI) / 180;
+		const pose = {
+			x: t.pos[0] - Math.cos(rad) * 10,
+			y: t.pos[1] - Math.sin(rad) * 10,
+			z: t.pos[2] + 5,
+			yaw,
+			pitch: -15
+		};
+		handleEndSession();
+		const query = new URLSearchParams(Object.entries(pose).map(([k, v]) => [k, v.toFixed(2)])).toString();
+		setTimeout(() => goto(`/editor?${query}`), 150);
+	}
+
+	// ── control bar (pygame HUD mode) ──
 	const RAIL_ICONS = {
 		weather: 'M6.5 19a4.5 4.5 0 0 1-.4-8.98A6 6 0 0 1 17.7 8.1 4 4 0 0 1 18 19H6.5z',
 		traffic: 'M3 13l1.5-5h15L21 13v6h-2v-2H5v2H3v-6zm2.2 0h13.6l-1-3.5H6.2L5.2 13zM7 17a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm10 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z',
@@ -502,7 +532,8 @@
 		clear: 'M5 7h14M9 7V4h6v3m-7 4v6m4-6v6M6 7l1 13h10l1-13',
 		respawn: 'M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5',
 		end: 'M12 3v9m6.4-6.4a9 9 0 1 1-12.8 0',
-		calibrate: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0-5v3m0 12v3M3 12h3m12 0h3'
+		calibrate: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm0-5v3m0 12v3M3 12h3m12 0h3',
+		editor: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7zm10 3a3 3 0 1 0 0-6 3 3 0 0 0 0 6z'
 	};
 	type PanelName = 'weather' | 'traffic' | 'camera' | 'trajectory' | 'teleport' | 'fleet';
 	function togglePanel(name: PanelName) {
@@ -548,6 +579,7 @@
 			: []),
 		{ id: 'clear', label: 'Clear NPCs', title: 'Delete all non-ego vehicles (traffic, scenario actors, trajectory playback, placed cars)', icon: RAIL_ICONS.clear, tone: 'warn', onClick: () => clearNonEgoVehicles() },
 		{ id: 'respawn', label: 'Respawn', icon: RAIL_ICONS.respawn, onClick: () => respawnVehicle() },
+		{ id: 'editor', label: 'Switch to editor', title: 'End this drive and open the editor camera just behind the car', icon: RAIL_ICONS.editor, onClick: switchToEditor },
 		{ id: 'end', label: 'End session', icon: RAIL_ICONS.end, tone: 'danger', onClick: handleEndSession }
 	]);
 	let controlSections: ControlSection[] = $derived([
@@ -726,6 +758,28 @@
 						<h2 class="font-display text-2xl font-bold text-white tracking-widest uppercase">V2X Drive</h2>
 						<div class="mt-1.5 mx-auto w-12 h-0.5 bg-accent rounded-full"></div>
 						<p class="mt-2 font-body text-xs text-gray-500 tracking-wider uppercase">CARLA Simulation</p>
+					</div>
+
+					<!-- Mode: drive a car here, or fly the editor camera on its own page -->
+					<div class="mb-5">
+						<p class="block text-left text-[10px] font-body text-gray-600 tracking-widest uppercase mb-1.5">Mode</p>
+						<div class="flex bg-gray-800/50 rounded-xl p-1 border border-gray-800">
+							<button type="button" aria-pressed="true"
+								class="flex-1 px-3 py-2 rounded-lg text-xs font-body tracking-wider bg-gray-700 text-white shadow-sm cursor-default">
+								DRIVING
+							</button>
+							<a href="/editor" data-testid="mode-editor"
+								class="flex-1 px-3 py-2 rounded-lg text-xs font-body tracking-wider text-center text-gray-500 hover:text-gray-300 transition-all duration-200"
+								title="A free camera over the world with an outliner of every actor; nothing drives">
+								EDITOR
+							</a>
+						</div>
+						{#if pendingSpawn}
+							<p class="mt-1.5 text-left text-[10px] font-body text-gray-500" data-testid="pending-spawn">
+								Starts near the editor camera ({pendingSpawn.x.toFixed(0)}, {pendingSpawn.y.toFixed(0)}).
+								<button type="button" class="underline cursor-pointer" onclick={() => { pendingSpawn = null; }}>forget</button>
+							</p>
+						{/if}
 					</div>
 
 					<!-- Input mode toggle -->

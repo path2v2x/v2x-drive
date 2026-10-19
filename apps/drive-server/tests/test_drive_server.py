@@ -317,6 +317,10 @@ class TestDriveServerMessageHandling:
             "type": "server_status",
             "active_sessions": 1,
             "this_session_active": True,
+            "mode": "driving",
+            "editor_supported": True,
+            "editor_sessions": 0,
+            "editor_max_sessions": 2,
         }
         drive_server._active_sessions.clear()
 

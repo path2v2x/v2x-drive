@@ -164,7 +164,89 @@ export interface VehicleTelemetry {
 	hud?: HudTelemetry;
 }
 
-/** One button of a driving-view side rail (see SideRail.svelte). */
+// ── Editor mode ──
+
+export type SessionMode = 'driving' | 'editor';
+
+/** The editor camera's pose, replied to every camera message. */
+export interface CameraPoseMessage extends DriveMessage {
+	type: 'camera_pose';
+	x: number;
+	y: number;
+	z: number;
+	yaw: number;
+	pitch: number;
+	speed: number;
+	following: number | null;
+}
+
+export interface EditorStartPose {
+	x?: number;
+	y?: number;
+	z?: number;
+	yaw?: number;
+	pitch?: number;
+}
+
+export type WorldActorGroup =
+	| 'ego'
+	| 'voices'
+	| 'ghost'
+	| 'fleet'
+	| 'traffic'
+	| 'dynamic'
+	| 'trajectory'
+	| 'foreign'
+	| 'walker'
+	| 'prop'
+	| 'sensor'
+	| 'light'
+	| 'other';
+
+/** One row of the editor's outliner. */
+export interface WorldActor {
+	id: number;
+	type_id: string;
+	name: string;
+	role: string;
+	group: WorldActorGroup;
+	owner: string;
+	pos: [number, number, number] | null;
+	yaw: number | null;
+	speed_mps: number | null;
+	parent: number | null;
+	alive: boolean;
+}
+
+export interface WorldActorsMessage extends DriveMessage {
+	type: 'world_actors';
+	actors: WorldActor[];
+	total: number;
+	truncated: boolean;
+	groups: Record<string, number>;
+	following: number | null;
+}
+
+export interface ActorDetails extends WorldActor {
+	attributes: Record<string, string>;
+	bbox: [number, number, number] | null;
+	velocity: [number, number, number] | null;
+	rot: [number, number, number] | null;
+	control?: {
+		throttle: number;
+		steer: number;
+		brake: number;
+		hand_brake: boolean;
+		reverse: boolean;
+		gear: number;
+		manual_gear_shift: boolean;
+	} | null;
+	lights?: string[] | null;
+	speed_limit?: number | null;
+	parent_type: string | null;
+}
+
+/** One button of a driving-view control bar (see ControlBar.svelte). */
 export interface RailItem {
 	id: string;
 	label: string;

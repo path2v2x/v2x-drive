@@ -32,7 +32,10 @@ import type {
 	TeleportedMessage,
 	TeleportStatus,
 	VoicesSlot,
-	VoicesSlotsMessage
+	VoicesSlotsMessage,
+	CameraPoseMessage,
+	EditorStartPose,
+	SessionMode
 } from '$lib/types';
 import { v2xZones } from './v2xZones';
 
@@ -83,6 +86,10 @@ export const voicesSlotsInfo = writable<{ available: boolean; default: string; l
 });
 /** Scenario slot the current session's ego publishes under ('' = none). */
 export const egoVoicesRole = writable<string>('');
+/** What kind of session the server confirmed: a car with a camera, or the editor's free camera. */
+export const sessionMode = writable<SessionMode>('driving');
+/** The editor camera's pose as the session started (the editor store takes it from here). */
+export const editorStartCamera = writable<CameraPoseMessage | null>(null);
 /** Camera frames received per second (the driving HUD's "Client FPS" line). */
 export const clientFps = writable<number>(0);
 let frameCount = 0;
@@ -425,9 +432,13 @@ function handleServerMessage(msg: DriveMessage): void {
 	switch (msg.type) {
 		case 'session_ready':
 			sessionState.set('driving');
-			vehicleId.set(msg.vehicle_id as number);
-			objectsCount.set(msg.objects_count as number);
+			sessionMode.set(msg.mode === 'editor' ? 'editor' : 'driving');
+			vehicleId.set(typeof msg.vehicle_id === 'number' ? msg.vehicle_id : null);
+			objectsCount.set((msg.objects_count as number) ?? 0);
 			egoVoicesRole.set(typeof msg.voices_role === 'string' ? msg.voices_role : '');
+			editorStartCamera.set(
+				msg.camera && typeof msg.camera === 'object' ? (msg.camera as CameraPoseMessage) : null
+			);
 			break;
 
 		case 'voices_slots': {
@@ -769,12 +780,30 @@ export function setDriveMap(map: DriveMapId): void {
  * Start a drive session. ``voicesRole`` names the VOICES scenario slot the ego publishes
  * under ('' = none); omitted, the server applies its own default.
  */
-export function startSession(start: string, end: string, vehicle?: string, voicesRole?: string): void {
+export function startSession(
+	start: string,
+	end: string,
+	vehicle?: string,
+	voicesRole?: string,
+	spawn?: { x: number; y: number; yaw?: number }
+): void {
 	resetTeleportStatus();
 	sessionState.set('reconstructing');
+	sessionMode.set('driving');
 	lastError.set(null);
 	const msg: DriveMessage = { type: 'start_session', start, end, vehicle: vehicle ?? 'vehicle.tesla.model3' };
 	if (voicesRole !== undefined) msg.voices_role = voicesRole;
+	if (spawn) msg.spawn = spawn;
+	send(msg);
+}
+
+/** Start an editor session: no car, one free camera at ``pose`` (or above a spawn point). */
+export function startEditorSession(pose?: EditorStartPose): void {
+	resetTeleportStatus();
+	sessionState.set('reconstructing');
+	lastError.set(null);
+	const msg: DriveMessage = { type: 'start_session', mode: 'editor' };
+	if (pose && Object.keys(pose).length > 0) msg.pose = pose;
 	send(msg);
 }
 

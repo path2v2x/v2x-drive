@@ -91,6 +91,10 @@ class Config:
     # HUD then derives acceleration from the velocity and shows no collisions.
     HUD_SENSORS: str = "1"
 
+    # Editor mode: camera-only sessions with a fly camera. Each one is a full
+    # UE5 scene render (~27 ms, ~0.9 GB VRAM), so keep them few.
+    EDITOR_MAX_SESSIONS: int = 2
+
     # Logging
     LOG_LEVEL: str = "INFO"
 

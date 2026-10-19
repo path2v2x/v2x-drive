@@ -162,6 +162,13 @@ _traffic_actor_ids: set[int] = set()
 # ── coexist branch helpers ──────────────────────────────────────────────────
 from digital_twin_bridge.actor_ownership import is_drive_owned  # noqa: E402
 from digital_twin_bridge.voices_slots import SlotClaimError, park_actor, reset_adopted_actor  # noqa: E402
+from digital_twin_bridge.editor_camera import CameraPose, Envelope, FlyCamera, pose_behind, pose_from_dict  # noqa: E402
+
+# Editor mode: the free camera's stream size and the spring-arm follow offset.
+EDITOR_CAMERA_WIDTH = 960
+EDITOR_CAMERA_HEIGHT = 540
+EDITOR_FOLLOW_DISTANCE_M = 10.0
+EDITOR_FOLLOW_HEIGHT_M = 4.0
 
 
 def _drive_config():
@@ -550,6 +557,11 @@ class DriveSession:
         self._openscenario_runner = openscenario_runner
         self._reconstructor: Optional[SceneReconstructor] = None
         self.vehicle = None
+        # Editor mode: "driving" (a car with a camera on it) or "editor" (a free camera only).
+        self.mode = "driving"
+        self._fly: Optional[FlyCamera] = None
+        self._follow_actor = None
+        self._editor_role = f"drive_editor_{id(self):x}"
         self.active_camera: str = "chase"
         self._active = False
         self._starting = False
@@ -667,7 +679,7 @@ class DriveSession:
         return _voices_roles()
 
     async def start(self, start: str, end: str, vehicle_blueprint: str = DEFAULT_VEHICLE,
-                    voices_role: Optional[str] = None) -> dict:
+                    voices_role: Optional[str] = None, spawn: Optional[dict] = None) -> dict:
         """Start a driving session: reconstruct scene, spawn vehicle, attach camera.
 
         ``voices_role``: scenario slot for the ego (``None`` = the server default,
@@ -728,6 +740,23 @@ class DriveSession:
             elif self._voices_role and self._slots is None:
                 # coexist: reuse the car a previous session left under this role
                 self.vehicle = _adopt_kept_ego(self._world, self._voices_role, spawn_points[0])
+            if self.vehicle is None and isinstance(spawn, dict):
+                # a requested pose (switching over from the editor camera): the lane nearest to it
+                try:
+                    import carla
+                    loc = carla.Location(x=float(spawn.get("x", 0.0)), y=float(spawn.get("y", 0.0)),
+                                         z=float(spawn.get("z", 0.0)))
+                    wp = self._map.get_waypoint(loc, project_to_road=True)
+                    if wp is not None:
+                        yaw = spawn.get("yaw")
+                        tf = carla.Transform(
+                            carla.Location(x=wp.transform.location.x, y=wp.transform.location.y,
+                                           z=wp.transform.location.z + 0.5),
+                            carla.Rotation(yaw=float(yaw) if isinstance(yaw, (int, float)) else wp.transform.rotation.yaw),
+                        )
+                        self.vehicle = self._world.try_spawn_actor(ego_bp, tf)
+                except Exception as e:
+                    logger.debug("Requested spawn pose failed, using a spawn point: %s", e)
             if self.vehicle is None:
                 for sp in spawn_points:
                     self.vehicle = self._world.try_spawn_actor(ego_bp, sp)
@@ -876,6 +905,212 @@ class DriveSession:
             logger.info("CARLA not available — camera sensor skipped (mock mode)")
         except Exception as e:
             logger.warning("Failed to attach camera sensor: %s", e)
+
+    # ── Editor mode: a camera-only session moved by the fly controls ──
+
+    def start_editor(self, pose: Optional[dict] = None) -> dict:
+        """Start an editor session: no ego, one free camera at ``pose`` (or above a spawn point)."""
+        if self._active or self._starting:
+            raise RuntimeError("Session already active")
+        limit = int(_drive_config().EDITOR_MAX_SESSIONS)
+        if editor_session_count() >= limit:
+            raise RuntimeError("editor session limit reached (%d); end another editor session first" % limit)
+        self._starting = True
+        try:
+            self.mode = "editor"
+            spawn_points = list(self._map.get_spawn_points())
+            if spawn_points:
+                sp = spawn_points[0]
+                default = CameraPose(x=float(sp.location.x), y=float(sp.location.y), z=float(sp.location.z) + 30.0,
+                                     yaw=float(sp.rotation.yaw), pitch=-35.0)
+            else:
+                default = CameraPose()
+            self._fly = FlyCamera(pose_from_dict(pose, default), envelope=Envelope.from_points(spawn_points))
+            self._spawn_editor_camera()
+            if self._camera_sensor is None:
+                raise RuntimeError("Editor camera could not be created")
+            self._accepting_frames = True
+            self._active = True
+            self._starting = False
+            p = self._fly.pose
+            logger.info("Editor session started: camera %s at (%.1f, %.1f, %.1f) yaw %.0f",
+                        getattr(self._camera_sensor, "id", "?"), p.x, p.y, p.z, p.yaw)
+            return {
+                "type": "session_ready",
+                "mode": "editor",
+                "vehicle_id": None,
+                "objects_count": 0,
+                "sensor_actor_ids": self.sensor_actor_ids(),
+                "scene_actor_ids": [],
+                "ego_role": "",
+                "voices_role": "",
+                "owned_actor_ids": self.owned_actor_ids(),
+                "camera": self._camera_state(),
+            }
+        except Exception:
+            self._force_cleanup()
+            raise
+
+    def _editor_blueprint(self, bp_lib):
+        bp = bp_lib.find("sensor.camera.rgb")
+        if bp is None:
+            raise RuntimeError("sensor.camera.rgb blueprint not found")
+        for key, value in (("image_size_x", str(EDITOR_CAMERA_WIDTH)), ("image_size_y", str(EDITOR_CAMERA_HEIGHT)),
+                           ("fov", "90"), ("sensor_tick", "0.05"), ("role_name", self._editor_role)):
+            try:
+                bp.set_attribute(key, value)
+            except Exception:
+                pass
+        return bp
+
+    def _fly_transform(self):
+        import carla
+        p = self._fly.pose
+        return carla.Transform(carla.Location(x=p.x, y=p.y, z=p.z), carla.Rotation(pitch=p.pitch, yaw=p.yaw, roll=0.0))
+
+    def _spawn_editor_camera(self, attach_to=None) -> None:
+        """(Re)create the editor camera: free at the fly pose, or on a spring arm behind ``attach_to``."""
+        import carla
+        self._accepting_frames = False
+        if self._camera_sensor is not None:
+            for step in (self._camera_sensor.stop, self._camera_sensor.destroy):
+                try:
+                    step()
+                except Exception:
+                    pass
+            self._camera_sensor = None
+        bp = self._editor_blueprint(self._world.get_blueprint_library())
+        if attach_to is None:
+            self._camera_sensor = self._world.spawn_actor(bp, self._fly_transform())
+        else:
+            extent = getattr(getattr(attach_to, "bounding_box", None), "extent", None)
+            back = max(EDITOR_FOLLOW_DISTANCE_M, 4.0 * float(getattr(extent, "x", 2.0) or 2.0))
+            up = max(EDITOR_FOLLOW_HEIGHT_M, 3.0 * float(getattr(extent, "z", 1.0) or 1.0))
+            offset = carla.Transform(carla.Location(x=-back, y=0.0, z=up), carla.Rotation(pitch=-12.0))
+            attachment = getattr(getattr(carla, "AttachmentType", None), "SpringArmGhost", None)
+            if attachment is not None:
+                self._camera_sensor = self._world.spawn_actor(bp, offset, attach_to=attach_to, attachment_type=attachment)
+            else:
+                self._camera_sensor = self._world.spawn_actor(bp, offset, attach_to=attach_to)
+        self._camera_sensor.listen(self._on_camera_frame)
+        self._accepting_frames = True
+        self._follow_actor = attach_to
+
+    def _require_editor(self) -> None:
+        if not self._active or self.mode != "editor" or self._fly is None:
+            raise RuntimeError("No editor session")
+
+    def _camera_state(self) -> dict:
+        following = getattr(self._follow_actor, "id", None) if self._follow_actor is not None else None
+        return {"type": "camera_pose", **self._fly.pose.to_dict(), "speed": round(self._fly.speed, 1),
+                "following": following}
+
+    @staticmethod
+    def _actor_pose(actor):
+        t = actor.get_transform()
+        return float(t.location.x), float(t.location.y), float(t.location.z), float(t.rotation.yaw)
+
+    def _detach_follow(self) -> None:
+        """Back to a free camera, placed behind the actor that was followed."""
+        target = self._follow_actor
+        self._follow_actor = None
+        if target is not None:
+            try:
+                x, y, z, yaw = self._actor_pose(target)
+                self._fly.set_pose(pose_behind(x, y, z, yaw))
+            except Exception:
+                pass
+        self._spawn_editor_camera()
+
+    def camera_move(self, forward=0.0, right=0.0, up=0.0, dyaw=0.0, dpitch=0.0, dt=0.05, speed=None,
+                    boost=False) -> dict:
+        """One frame of fly input; replies with the pose the camera now has."""
+        self._require_editor()
+        if speed is not None:
+            self._fly.set_speed(speed)
+        moving = any(abs(float(v or 0.0)) > 1e-6 for v in (forward, right, up, dyaw, dpitch))
+        if self._follow_actor is not None:
+            if not getattr(self._follow_actor, "is_alive", True):
+                self._detach_follow()  # the target died: carry on from where it was
+            elif moving:
+                self._detach_follow()  # any input takes the camera back
+            else:
+                return self._camera_state()
+        self._fly.move(forward, right, up, dyaw, dpitch, dt, boost)
+        if moving and self._camera_sensor is not None:
+            try:
+                self._camera_sensor.set_transform(self._fly_transform())
+            except Exception as e:
+                logger.debug("Editor camera move failed: %s", e)
+        return self._camera_state()
+
+    def camera_focus(self, actor_id: int) -> dict:
+        """Jump to a viewpoint behind and above an actor, looking at it."""
+        self._require_editor()
+        actor = self._world.get_actor(int(actor_id))
+        if actor is None:
+            raise ValueError("actor %s not found" % actor_id)
+        x, y, z, yaw = self._actor_pose(actor)
+        self._fly.set_pose(pose_behind(x, y, z, yaw))
+        if self._follow_actor is not None:
+            self._follow_actor = None
+            self._spawn_editor_camera()
+        elif self._camera_sensor is not None:
+            self._camera_sensor.set_transform(self._fly_transform())
+        return self._camera_state()
+
+    def camera_follow(self, actor_id: Optional[int]) -> dict:
+        """Ride behind an actor on a spring arm (None: back to the free camera)."""
+        self._require_editor()
+        if actor_id is None:
+            if self._follow_actor is not None:
+                self._detach_follow()
+            return self._camera_state()
+        actor = self._world.get_actor(int(actor_id))
+        if actor is None:
+            raise ValueError("actor %s not found" % actor_id)
+        self._spawn_editor_camera(attach_to=actor)
+        return self._camera_state()
+
+    def _outliner_context(self):
+        from digital_twin_bridge.world_outliner import OutlinerContext
+        roster = None
+        kept_ids: set = set()
+        if self._slots is not None:
+            roster = self._slots.roster
+            for record in self._slots.keeper.kept().values():
+                try:
+                    kept_ids.add(int(record.get("actor_id")))
+                except (TypeError, ValueError):
+                    pass
+        return OutlinerContext(
+            session_egos=session_ego_ids(),
+            traffic_ids=set(_traffic_actor_ids),
+            dynamic_ids=set(_dynamic_actor_ids),
+            kept_ids=kept_ids,
+            editor_roles={getattr(s, "_editor_role", "") for s in _active_sessions if getattr(s, "mode", "") == "editor"},
+            fleet_kind_of=self._fleet.kind_of if self._fleet is not None else None,
+            roster=roster,
+        )
+
+    def list_world_actors(self, max_items: int = 400) -> dict:
+        """The outliner: every actor of the world, grouped (read-only)."""
+        if not self._active:
+            raise RuntimeError("No active session")
+        from digital_twin_bridge import world_outliner
+        result = world_outliner.list_actors(self._world, self._outliner_context(), max_items=max_items)
+        result["type"] = "world_actors"
+        result["following"] = getattr(self._follow_actor, "id", None) if self._follow_actor is not None else None
+        return result
+
+    def inspect_actor(self, actor_id: int) -> dict:
+        if not self._active:
+            raise RuntimeError("No active session")
+        from digital_twin_bridge import world_outliner
+        details = world_outliner.inspect(self._world, int(actor_id), self._outliner_context())
+        if details is None:
+            raise ValueError("actor %s not found" % actor_id)
+        return {"type": "actor_details", **details}
 
     # ── driving HUD: IMU + collision sensor and the per-frame HUD block ──
 
@@ -2477,6 +2712,11 @@ class DriveSession:
                 logger.warning("Scene cleanup failed: %s", e)
             self._reconstructor = None
 
+        # Editor camera state (the sensor itself went with the camera cleanup above)
+        self._fly = None
+        self._follow_actor = None
+        self.mode = "driving"
+
         self._latest_frame = None
 
     @property
@@ -2486,6 +2726,11 @@ class DriveSession:
     @property
     def is_starting(self) -> bool:
         return self._starting
+
+
+def _needs_vehicle() -> dict:
+    return {"type": "error", "code": "needs_vehicle",
+            "message": "This action needs a driving session with a car; the editor session has only a camera."}
 
 
 async def handle_message(session: DriveSession, msg: dict, map_controller=None) -> dict:
@@ -2498,6 +2743,10 @@ async def handle_message(session: DriveSession, msg: dict, map_controller=None) 
                 "type": "server_status",
                 "active_sessions": active_session_count(),
                 "this_session_active": session.is_active,
+                "mode": session.mode,
+                "editor_supported": True,
+                "editor_sessions": editor_session_count(),
+                "editor_max_sessions": int(_drive_config().EDITOR_MAX_SESSIONS),
             }
             if map_controller is not None:
                 response["map"] = map_controller.status_payload()
@@ -2587,6 +2836,9 @@ async def handle_message(session: DriveSession, msg: dict, map_controller=None) 
                 return {"type": "error", "message": "OpenSCENARIO runner unavailable"}
             return session._openscenario_runner.stop()
         elif msg_type == "start_session":
+            if str(msg.get("mode", "driving")) == "editor":
+                pose = msg.get("pose") if isinstance(msg.get("pose"), dict) else None
+                return session.start_editor(pose=pose)
             vehicle_bp = msg.get("vehicle", DEFAULT_VEHICLE)
             voices_role = msg.get("voices_role")
             try:
@@ -2595,15 +2847,33 @@ async def handle_message(session: DriveSession, msg: dict, map_controller=None) 
                     end=msg["end"],
                     vehicle_blueprint=vehicle_bp,
                     voices_role=None if voices_role is None else str(voices_role),
+                    spawn=msg.get("spawn") if isinstance(msg.get("spawn"), dict) else None,
                 )
             except SlotClaimError as e:
                 return {"type": "error", "code": e.code, "message": str(e)}
+        elif msg_type == "camera_move":
+            return session.camera_move(
+                forward=float(msg.get("f", 0.0)), right=float(msg.get("r", 0.0)), up=float(msg.get("u", 0.0)),
+                dyaw=float(msg.get("dyaw", 0.0)), dpitch=float(msg.get("dpitch", 0.0)),
+                dt=float(msg.get("dt", 0.05)), speed=msg.get("speed"), boost=bool(msg.get("boost", False)),
+            )
+        elif msg_type == "camera_focus":
+            return session.camera_focus(int(msg["actor_id"]))
+        elif msg_type == "camera_follow":
+            actor_id = msg.get("actor_id")
+            return session.camera_follow(None if actor_id is None else int(actor_id))
+        elif msg_type == "list_world_actors":
+            return session.list_world_actors(int(msg.get("max", 400)))
+        elif msg_type == "inspect_actor":
+            return session.inspect_actor(int(msg["actor_id"]))
         elif msg_type == "list_voices_slots":
             if session._slots is None:
                 return {"type": "voices_slots", "slots": [], "local_org": "", "default": "",
                         "available": False, "scenario": ""}
             return {"type": "voices_slots", **session._slots.status(session._world)}
         elif msg_type == "control":
+            if session.is_active and session.vehicle is None:
+                return _needs_vehicle()
             return session.apply_control(
                 steer=float(msg.get("s", 0)),
                 throttle=float(msg.get("t", 0)),
@@ -2611,9 +2881,13 @@ async def handle_message(session: DriveSession, msg: dict, map_controller=None) 
                 reverse=bool(msg.get("rev", False)),
             )
         elif msg_type == "camera_switch":
+            if session.is_active and session.vehicle is None:
+                return _needs_vehicle()
             session.switch_camera(msg["view"])
             return {"type": "camera_switched", "view": msg["view"]}
         elif msg_type == "camera_zoom":
+            if session.is_active and session.vehicle is None:
+                return _needs_vehicle()
             return session.zoom_camera(
                 factor=msg.get("factor", 1.0),
                 reset=bool(msg.get("reset", False)),
@@ -2631,8 +2905,12 @@ async def handle_message(session: DriveSession, msg: dict, map_controller=None) 
         elif msg_type == "sync_v2x_zones":
             return session.sync_v2x_zones(msg.get("zones", []))
         elif msg_type == "respawn":
+            if session.is_active and session.vehicle is None:
+                return _needs_vehicle()
             return session.respawn()
         elif msg_type == "teleport":
+            if session.is_active and session.vehicle is None:
+                return _needs_vehicle()
             raw_request_id = msg.get("request_id")
             try:
                 request_id = session._teleport_request_id(raw_request_id)
@@ -2768,6 +3046,14 @@ _active_sessions: list[DriveSession] = []
 def active_session_count() -> int:
     return sum(
         1 for session in _active_sessions if session.is_active or session.is_starting
+    )
+
+
+def editor_session_count() -> int:
+    """Editor (camera-only) sessions alive or starting; each one renders a full scene."""
+    return sum(
+        1 for session in _active_sessions
+        if getattr(session, "mode", "") == "editor" and (session.is_active or session.is_starting)
     )
 
 
