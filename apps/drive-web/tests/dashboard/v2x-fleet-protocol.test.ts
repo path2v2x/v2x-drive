@@ -104,6 +104,13 @@ describe('V2X fleet protocol', () => {
 		});
 		spawnErv('police', 'random');
 		expect(socket.sentJson().at(-1)).toMatchObject({ kind: 'erv', profile: 'police', spawn: 'random' });
+		expect(socket.sentJson().at(-1)).not.toHaveProperty('role');
+		spawnErv('ambulance', 'random', 150, 'PATH-M-1');
+		expect(socket.sentJson().at(-1)).toMatchObject({ kind: 'erv', profile: 'ambulance', role: 'PATH-M-1' });
+		despawnFleetVehicle(4, true);
+		expect(socket.sentJson().at(-1)).toEqual({ type: 'despawn_v2x_vehicle', actor_id: 4, release: true });
+		despawnFleetVehicle(4);
+		expect(socket.sentJson().at(-1)).toEqual({ type: 'despawn_v2x_vehicle', actor_id: 4 });
 
 		socket.receive({ type: 'v2x_vehicles', vehicles: [vehicle(1, 'civilian'), vehicle(2, 'erv')],
 			tracks: [{ key: 'actor:2', active: true }], stats: { count: 2, max: 12, tick_ms_p95: 3.2, decision_hz: 10, degraded: false } });

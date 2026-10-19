@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import type { CameraView, DriveMapId, DriveMapOption, SpawnableObject } from '$lib/types';
+	import type { CameraView, DriveMapId, DriveMapOption, SpawnableObject, VoicesSlot } from '$lib/types';
 
 	import {
 		gamepadConnected,
@@ -36,6 +36,10 @@
 		connect,
 		disconnect,
 		startSession,
+		voicesSlots,
+		voicesSlotsInfo,
+		egoVoicesRole,
+		requestVoicesSlots,
 		sendControl,
 		switchCamera,
 		zoomCamera,
@@ -94,6 +98,34 @@
 	let cameraViewRef = $state<CameraViewComponent | null>(null);
 	let driveWsUrl = $state('');
 	let selectedVehicle = $state('vehicle.tesla.model3');
+	// Publish the ego to VOICES under a scenario slot (PATH-BG-5 by default); remembered per browser.
+	const VOICES_STORAGE_KEY = 'v2x-drive:voices';
+	function loadVoicesPref(): { enabled: boolean; slot: string } {
+		try {
+			const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(VOICES_STORAGE_KEY);
+			const parsed = raw ? (JSON.parse(raw) as { enabled?: boolean; slot?: string }) : {};
+			return { enabled: Boolean(parsed.enabled), slot: typeof parsed.slot === 'string' ? parsed.slot : '' };
+		} catch {
+			return { enabled: false, slot: '' };
+		}
+	}
+	const voicesPref = loadVoicesPref();
+	let voicesEnabled = $state(voicesPref.enabled);
+	let voicesSlot = $state(voicesPref.slot);
+	function voicesSlotLabel(s: VoicesSlot): string {
+		switch (s.state) {
+			case 'free':
+				return 'free';
+			case 'kept':
+				return 'your parked car';
+			case 'session':
+				return 'in use by another browser';
+			case 'fleet':
+				return 'in use by the fleet';
+			default:
+				return s.emergency ? 'taken by the DT manual car' : 'taken by background traffic';
+		}
+	}
 	let showObjectPlacer = $state(false);
 	let showV2xPlacer = $state(false);
 	let objectFilter = $state('');
@@ -210,6 +242,40 @@
 	// Do not name this value `state`: Svelte's type checker then interprets the
 	// `$state` rune above as an auto-subscription to the local value.
 	let driveState = $derived($sessionState);
+
+	// VOICES slots: refresh while the lobby is open so the picker shows who holds what.
+	$effect(() => {
+		if (!$driveConnected || (driveState !== 'idle' && driveState !== 'connecting')) return;
+		requestVoicesSlots();
+		const timer = setInterval(requestVoicesSlots, 5000);
+		return () => clearInterval(timer);
+	});
+	$effect(() => {
+		if (!voicesSlot && $voicesSlotsInfo.default) voicesSlot = $voicesSlotsInfo.default;
+	});
+	$effect(() => {
+		const pref = JSON.stringify({ enabled: voicesEnabled, slot: voicesSlot });
+		try {
+			localStorage.setItem(VOICES_STORAGE_KEY, pref);
+		} catch {
+			/* storage unavailable */
+		}
+	});
+	let voicesChoice = $derived($voicesSlots.find((s) => s.name === voicesSlot) ?? null);
+	let voicesBlocked = $derived(
+		voicesEnabled && voicesChoice !== null && !(voicesChoice.state === 'free' || voicesChoice.state === 'kept')
+	);
+	let voicesHint = $derived(
+		!voicesEnabled
+			? 'Local only: the car is invisible to the VOICES network.'
+			: voicesChoice === null
+				? 'Pick the scenario slot the car publishes under.'
+				: voicesBlocked
+					? `${voicesChoice.name} is ${voicesSlotLabel(voicesChoice)}; choose another slot.`
+					: voicesChoice.state === 'kept'
+						? `Your parked car under ${voicesChoice.name} is used again; the DT adapter keeps publishing it.`
+						: `The car carries ${voicesChoice.name} and the DT adapter publishes its BSMs. Ending the session parks it instead of destroying it.`
+	);
 	let currentTelemetry = $derived($telemetry);
 	let gamepad = $derived($gamepadConnected);
 	let isCalibrated = $derived($calibrated);
@@ -298,7 +364,7 @@
 		}
 		const now = new Date();
 		const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-		startSession(oneHourAgo.toISOString(), now.toISOString(), selectedVehicle);
+		startSession(oneHourAgo.toISOString(), now.toISOString(), selectedVehicle, voicesEnabled ? voicesSlot : '');
 	}
 
 	function handleSaveScenario() {
@@ -522,6 +588,15 @@
 	>
 		&larr; Home
 	</a>
+	{#if $egoVoicesRole && driveState !== 'idle' && driveState !== 'connecting'}
+		<div
+			class="absolute z-[70] top-3 left-1/2 translate-x-16 rounded-full border border-rose-700/60 bg-gray-900/90 px-3 py-1.5 text-[11px] font-semibold tracking-[0.16em] text-rose-200 uppercase"
+			title="This car publishes to the VOICES network under this scenario name"
+			data-testid="voices-badge"
+		>
+			VOICES · {$egoVoicesRole}
+		</div>
+	{/if}
 
 	{#if driveState === 'idle' || driveState === 'connecting'}
 		<div class="absolute inset-0 flex items-center justify-center bg-gray-950">
@@ -639,6 +714,41 @@
 							<div class="px-4 py-2.5 bg-gray-800/50 border border-gray-800 rounded-xl text-sm font-body text-gray-600 text-center">
 								<span class="inline-block w-3 h-3 border border-gray-600 border-t-transparent rounded-full animate-spin mr-2 align-middle"></span>
 								Loading vehicles...
+							</div>
+						{/if}
+					</div>
+
+					<!-- VOICES slot -->
+					<div class="mb-3">
+						<p class="block text-left text-[10px] font-body text-gray-600 tracking-widest uppercase mb-1.5">VOICES</p>
+						{#if $voicesSlotsInfo.available}
+							<div class="flex gap-2">
+								<button type="button" onclick={() => { voicesEnabled = !voicesEnabled; }} aria-pressed={voicesEnabled}
+									data-testid="voices-toggle"
+									class="px-3 py-2 rounded-xl text-xs font-body tracking-wider transition-all duration-200 cursor-pointer border
+									{voicesEnabled
+										? 'bg-gray-800 text-white border-accent/50 shadow-[0_0_15px_rgba(220,38,38,0.15)]'
+										: 'bg-gray-800/50 text-gray-500 border-gray-800 hover:border-gray-700 hover:text-gray-300'}">
+									{voicesEnabled ? 'PUBLISH' : 'LOCAL'}
+								</button>
+								<div class="relative flex-1">
+									<select bind:value={voicesSlot} disabled={!voicesEnabled} aria-label="VOICES slot" data-testid="voices-slot"
+										class="w-full px-4 py-2 bg-gray-800/50 border border-gray-800 rounded-xl text-sm font-body text-white focus:outline-none focus:border-accent/50 appearance-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+										{#each $voicesSlots as s (s.name)}
+											<option value={s.name} disabled={s.state === 'taken' || s.state === 'session' || s.state === 'fleet'}>
+												{s.name} · {voicesSlotLabel(s)}
+											</option>
+										{/each}
+									</select>
+									<svg class="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+										<path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+									</svg>
+								</div>
+							</div>
+							<p class="mt-1.5 text-left text-[10px] font-body leading-snug {voicesBlocked ? 'text-amber-400' : 'text-gray-500'}" data-testid="voices-hint">{voicesHint}</p>
+						{:else}
+							<div class="px-4 py-2.5 bg-gray-800/50 border border-gray-800 rounded-xl text-xs font-body text-gray-600 text-left">
+								No scenario slots: the DT scenario file is not available to this server.
 							</div>
 						{/if}
 					</div>

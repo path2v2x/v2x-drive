@@ -450,6 +450,9 @@ export interface V2xFleetVehicle {
 	lane_change: string | null;
 	passing: boolean;
 	spawned_at: number;
+	/** VOICES scenario slot the car publishes under ('' = none) and whether it is parked under it */
+	slot?: string;
+	parked?: boolean;
 	/** ERV only */
 	siren?: boolean;
 	lights?: boolean | string[];
@@ -478,8 +481,31 @@ export interface ErvTrack {
 	fleet_state: string | null;
 }
 
+export type VoicesSlotState = 'free' | 'kept' | 'session' | 'fleet' | 'taken';
+
+/** A scenario name of our organisation the ego or a fleet ERV may publish under. */
+export interface VoicesSlot {
+	name: string;
+	vehicle_type: string;
+	bsm_id: string;
+	emergency: boolean;
+	state: VoicesSlotState;
+	holder: string;
+	actor_id: number | null;
+}
+
+export interface VoicesSlotsMessage extends DriveMessage {
+	type: 'voices_slots';
+	slots: VoicesSlot[];
+	local_org: string;
+	default: string;
+	available: boolean;
+	scenario: string;
+}
+
 export interface V2xFleetStats {
 	count: number;
+	parked?: number;
 	max: number;
 	tick_ms_avg: number;
 	tick_ms_p95: number;

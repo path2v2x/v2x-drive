@@ -160,6 +160,7 @@ _traffic_actor_ids: set[int] = set()
 
 # ── coexist branch helpers ──────────────────────────────────────────────────
 from digital_twin_bridge.actor_ownership import is_drive_owned  # noqa: E402
+from digital_twin_bridge.voices_slots import SlotClaimError, park_actor, reset_adopted_actor  # noqa: E402
 
 
 def _drive_config():
@@ -495,12 +496,16 @@ class DriveSession:
         scene_fetch_max_pages: int = DEFAULT_SCENE_FETCH_MAX_PAGES,
         scene_fetch_max_items: int = DEFAULT_SCENE_FETCH_MAX_ITEMS,
         fleet=None,
+        slots=None,
     ):
         self._world = world
         self._map = carla_map
         self._api_fetcher = api_fetcher
         # Server-owned V2X fleet (civilians / ERVs driven by the behaviour models); None = disabled.
         self._fleet = fleet
+        # VOICES scenario slots (voices_slots.SlotService): validates a session's scenario role
+        # and remembers parked slot cars; None = the legacy DTB_VOICES_EGO_ROLE behaviour only.
+        self._slots = slots
         # Emergency-vehicle pull-over warning: every tick, broadcast a
         # v2x_alert for each firetruck within this radius. Browser dedups by
         # actor id (single toast per truck, distance updates in place) and
@@ -643,10 +648,18 @@ class DriveSession:
             if not release_when_done:
                 limiter.release()
 
-    async def start(self, start: str, end: str, vehicle_blueprint: str = DEFAULT_VEHICLE) -> dict:
+    def _slot_names(self) -> tuple:
+        """Scenario names that cars we keep in the world may carry (see voices_slots)."""
+        if self._slots is not None:
+            return tuple(self._slots.names())
+        return _voices_roles()
+
+    async def start(self, start: str, end: str, vehicle_blueprint: str = DEFAULT_VEHICLE,
+                    voices_role: Optional[str] = None) -> dict:
         """Start a driving session: reconstruct scene, spawn vehicle, attach camera.
 
-        If any step fails, _force_cleanup() ensures no actors are leaked.
+        ``voices_role``: scenario slot for the ego (``None`` = the server default,
+        ``""`` = none).  If any step fails, _force_cleanup() ensures no actors are leaked.
         """
         if self._active or self._starting:
             raise RuntimeError("Session already active")
@@ -676,9 +689,15 @@ class DriveSession:
             # instead of trying to spawn a duplicate from the .xosc. The role
             # is per-session (see self._ego_role) so SR picks this session's
             # ego specifically when other drivers are sharing the world.
-            # coexist: optionally take a VOICES/DT scenario role (e.g. PATH-M-1) so the
-            # TENA adapter publishes this browser-driven car.
-            self._voices_role = _claim_voices_role(self)
+            # coexist: optionally take a VOICES/DT scenario role (e.g. PATH-BG-5) so the
+            # TENA adapter publishes this browser-driven car.  ``voices_role`` None means
+            # the server default (DTB_VOICES_EGO_ROLE), "" means none; a name is checked
+            # against the scenario slots and may adopt the car a previous holder parked.
+            adopt = None
+            requested = _claim_voices_role(self) if voices_role is None else str(voices_role).strip()
+            if requested and self._slots is not None:
+                adopt = self._slots.claim(self._world, requested, by="session", marker=id(self))
+            self._voices_role = requested
             if self._voices_role:
                 self._ego_role = self._voices_role
             ego_bp.set_attribute("role_name", self._ego_role)
@@ -690,7 +709,11 @@ class DriveSession:
 
             random.shuffle(spawn_points)
             self.vehicle = None
-            if self._voices_role:
+            if adopt is not None:
+                reset_adopted_actor(adopt, spawn_points[0])
+                logger.info("Adopted parked VOICES car %s (actor id %d)", self._voices_role, adopt.id)
+                self.vehicle = adopt
+            elif self._voices_role and self._slots is None:
                 # coexist: reuse the car a previous session left under this role
                 self.vehicle = _adopt_kept_ego(self._world, self._voices_role, spawn_points[0])
             if self.vehicle is None:
@@ -700,6 +723,9 @@ class DriveSession:
                         break
             if self.vehicle is None:
                 raise RuntimeError("Failed to spawn vehicle")
+            if self._voices_role and self._slots is not None:
+                self._slots.hold(self._voices_role, "session", marker=id(self), actor_id=self.vehicle.id)
+                self._slots.keeper.forget(self._voices_role)
 
             # Physics power cap removed — vehicle runs at stock max_rpm / torque curve.
 
@@ -755,6 +781,7 @@ class DriveSession:
                 "sensor_actor_ids": sensor_actor_ids,
                 "scene_actor_ids": scene_actor_ids,
                 "ego_role": self._ego_role,
+                "voices_role": self._voices_role,
                 "owned_actor_ids": self.owned_actor_ids(),
             }
         except Exception:
@@ -1800,7 +1827,7 @@ class DriveSession:
             if role.startswith("ego_vehicle"):
                 preserved += 1
                 continue
-            if _protect_foreign() and not is_drive_owned(actor, _voices_roles(), _keep_voices_ego()):
+            if _protect_foreign() and not is_drive_owned(actor, self._slot_names(), _keep_voices_ego()):
                 preserved += 1  # coexist: other clients' cars (DT, HIL_Tool) are not ours to clear
                 continue
             try:
@@ -2249,21 +2276,27 @@ class DriveSession:
         if self.vehicle is not None:
             if self._voices_role and _keep_voices_ego() and not self._release_voices_ego:
                 # coexist: keep the VOICES ego alive so the DT adapter's binding survives;
-                # the next session with this role adopts it (see _adopt_kept_ego).
+                # parked beside the lane, the next holder of this slot adopts it.
+                parked = {}
                 try:
-                    import carla
-                    self.vehicle.apply_control(carla.VehicleControl(brake=1.0, hand_brake=True))
-                    self.vehicle.set_target_velocity(carla.Vector3D(0, 0, 0))
+                    parked = park_actor(self._map, self.vehicle)
                 except Exception as e:
                     logger.debug("Kept ego park failed: %s", e)
-                logger.info("Kept VOICES ego %s (actor id %s) in the world",
-                            self._voices_role, getattr(self.vehicle, "id", "?"))
+                if self._slots is not None:
+                    self._slots.keeper.remember(self._voices_role, self.vehicle, "session")
+                logger.info("Kept VOICES ego %s (actor id %s) in the world%s",
+                            self._voices_role, getattr(self.vehicle, "id", "?"),
+                            ", parked off the road" if parked.get("moved") else "")
             else:
                 try:
                     self.vehicle.destroy()
                 except Exception as e:
                     logger.warning("Vehicle destroy failed: %s", e)
+                if self._slots is not None and self._voices_role:
+                    self._slots.keeper.forget(self._voices_role)
             self.vehicle = None
+        if self._slots is not None and self._voices_role:
+            self._slots.release(self._voices_role, marker=id(self))
         self._voices_role = ""
         self._release_voices_ego = False
 
@@ -2399,11 +2432,21 @@ async def handle_message(session: DriveSession, msg: dict, map_controller=None) 
             return session._openscenario_runner.stop()
         elif msg_type == "start_session":
             vehicle_bp = msg.get("vehicle", DEFAULT_VEHICLE)
-            return await session.start(
-                start=msg["start"],
-                end=msg["end"],
-                vehicle_blueprint=vehicle_bp,
-            )
+            voices_role = msg.get("voices_role")
+            try:
+                return await session.start(
+                    start=msg["start"],
+                    end=msg["end"],
+                    vehicle_blueprint=vehicle_bp,
+                    voices_role=None if voices_role is None else str(voices_role),
+                )
+            except SlotClaimError as e:
+                return {"type": "error", "code": e.code, "message": str(e)}
+        elif msg_type == "list_voices_slots":
+            if session._slots is None:
+                return {"type": "voices_slots", "slots": [], "local_org": "", "default": "",
+                        "available": False, "scenario": ""}
+            return {"type": "voices_slots", **session._slots.status(session._world)}
         elif msg_type == "control":
             return session.apply_control(
                 steer=float(msg.get("s", 0)),
@@ -2516,23 +2559,27 @@ async def handle_message(session: DriveSession, msg: dict, map_controller=None) 
         elif msg_type == "spawn_v2x_vehicle":
             if session._fleet is None:
                 return {"type": "error", "message": "V2X driving models are disabled on this server"}
-            return session._fleet.spawn(
-                kind=str(msg.get("kind", "civilian")),
-                blueprint=msg.get("blueprint"),
-                profile=msg.get("profile"),
-                spawn=msg.get("spawn"),
-                destination=msg.get("destination", "random"),
-                params=msg.get("params") if isinstance(msg.get("params"), dict) else None,
-                ego_actor=session.vehicle if session.is_active else None,
-            )
+            try:
+                return session._fleet.spawn(
+                    kind=str(msg.get("kind", "civilian")),
+                    blueprint=msg.get("blueprint"),
+                    profile=msg.get("profile"),
+                    spawn=msg.get("spawn"),
+                    destination=msg.get("destination", "random"),
+                    params=msg.get("params") if isinstance(msg.get("params"), dict) else None,
+                    ego_actor=session.vehicle if session.is_active else None,
+                    role=msg.get("role"),
+                )
+            except SlotClaimError as e:
+                return {"type": "error", "code": e.code, "message": str(e)}
         elif msg_type == "despawn_v2x_vehicle":
             if session._fleet is None:
                 return {"type": "error", "message": "V2X driving models are disabled on this server"}
-            return session._fleet.despawn(int(msg["actor_id"]))
+            return session._fleet.despawn(int(msg["actor_id"]), release=bool(msg.get("release", False)))
         elif msg_type == "despawn_v2x_vehicles":
             if session._fleet is None:
                 return {"type": "error", "message": "V2X driving models are disabled on this server"}
-            return session._fleet.despawn_all()
+            return session._fleet.despawn_all(release=bool(msg.get("release", False)))
         elif msg_type == "list_v2x_vehicles":
             if session._fleet is None:
                 return {"type": "v2x_vehicles", "vehicles": [], "tracks": [], "stats": {"count": 0, "max": 0}}
@@ -2593,6 +2640,7 @@ async def serve_drive(
     scene_fetch_max_items: int = DEFAULT_SCENE_FETCH_MAX_ITEMS,
     v2x=None,
     fleet=None,
+    slots=None,
 ):
     """
     Handle a single WebSocket connection for driving.
@@ -2632,6 +2680,7 @@ async def serve_drive(
         scene_fetch_max_pages=scene_fetch_max_pages,
         scene_fetch_max_items=scene_fetch_max_items,
         fleet=fleet,
+        slots=slots,
     )
     frame_task = None
     frame_stop = asyncio.Event()

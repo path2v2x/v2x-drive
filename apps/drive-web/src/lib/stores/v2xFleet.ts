@@ -127,13 +127,21 @@ export function requestFleet(): boolean {
 export function spawnFleetVehicle(
 	kind: 'civilian' | 'erv',
 	spawn: V2xSpawnSpec,
-	options: { profile?: string; blueprint?: string; destination?: 'random' | 'none' | { x: number; y: number }; params?: Record<string, unknown> } = {}
+	options: {
+		profile?: string;
+		blueprint?: string;
+		destination?: 'random' | 'none' | { x: number; y: number };
+		params?: Record<string, unknown>;
+		/** VOICES scenario slot (e.g. PATH-M-1) the car publishes under; a car parked under it is adopted */
+		role?: string;
+	} = {}
 ): boolean {
 	const msg: DriveMessage = { type: 'spawn_v2x_vehicle', kind, spawn };
 	if (options.profile) msg.profile = options.profile;
 	if (options.blueprint) msg.blueprint = options.blueprint;
 	if (options.destination !== undefined) msg.destination = options.destination;
 	if (options.params) msg.params = options.params;
+	if (options.role) msg.role = options.role;
 	return sendDriveMessage(msg);
 }
 
@@ -147,17 +155,27 @@ export function spawnCiviliansAhead(count: number, aheadM = 60, spacingM = 25, p
 	return sent;
 }
 
-export function spawnErv(profile: 'ambulance' | 'fire' | 'police', placement: 'behind' | 'random', distanceM = 150): boolean {
+export function spawnErv(
+	profile: 'ambulance' | 'fire' | 'police',
+	placement: 'behind' | 'random',
+	distanceM = 150,
+	role = ''
+): boolean {
 	const spawn: V2xSpawnSpec = placement === 'behind' ? { behind: 'ego', distance_m: distanceM } : 'random';
-	return spawnFleetVehicle('erv', spawn, { profile, destination: 'random' });
+	return spawnFleetVehicle('erv', spawn, { profile, destination: 'random', role: role || undefined });
 }
 
-export function despawnFleetVehicle(actorId: number): boolean {
-	return sendDriveMessage({ type: 'despawn_v2x_vehicle', actor_id: actorId });
+/** Remove a vehicle. A slot car is parked and kept; ``release`` destroys it anyway. */
+export function despawnFleetVehicle(actorId: number, release = false): boolean {
+	const msg: DriveMessage = { type: 'despawn_v2x_vehicle', actor_id: actorId };
+	if (release) msg.release = true;
+	return sendDriveMessage(msg);
 }
 
-export function despawnFleet(): boolean {
-	return sendDriveMessage({ type: 'despawn_v2x_vehicles' });
+export function despawnFleet(release = false): boolean {
+	const msg: DriveMessage = { type: 'despawn_v2x_vehicles' };
+	if (release) msg.release = true;
+	return sendDriveMessage(msg);
 }
 
 export function setErvState(
@@ -182,6 +200,8 @@ export function resetFleetStore(): void {
 /** A readable label for a state, grouped by what the car is doing. */
 export function stateTone(state: string): 'calm' | 'alert' | 'yield' | 'stopped' | 'erv' | 'done' {
 	switch (state) {
+		case 'PARKED':
+			return 'done';
 		case 'NORMAL':
 		case 'EN_ROUTE':
 			return 'calm';

@@ -456,6 +456,17 @@ async def main():
             logger.warning("V2X feed setup failed; the message viewer is disabled", exc_info=True)
             v2x_ctx = None
 
+    # ── VOICES scenario slots: browser egos and fleet ERVs published under scenario names ──
+    from digital_twin_bridge.voices_slots import SlotKeeper, SlotService
+    slots = SlotService(
+        roster=v2x_ctx.roster if v2x_ctx is not None else None,
+        keeper=SlotKeeper(config.VOICES_SLOT_FILE or None),
+        local_org=config.V2X_LOCAL_ORG,
+        config_roles=config.voices_roles,
+        default_slot=config.VOICES_SLOT_DEFAULT,
+    )
+    runtime["slots"] = slots
+
     # ── V2X-reactive driving models: a server-owned fleet of civilians and ERVs ──
     fleet = None
     if config.fleet_enabled:
@@ -466,6 +477,7 @@ async def main():
                 hub=v2x_ctx.hub if v2x_ctx is not None else None,
                 codec=v2x_ctx.codec if v2x_ctx is not None else None,
                 registry=v2x_ctx.registry if v2x_ctx is not None else None,
+                slots=slots,
             )
 
             def _fleet_gps_to_xy(lat, lon):
@@ -687,6 +699,7 @@ async def main():
             scene_fetch_max_items=config.SCENE_FETCH_MAX_ITEMS,
             v2x=runtime.get("v2x"),
             fleet=runtime.get("fleet"),
+            slots=runtime.get("slots"),
         )
 
     async def tick_loop():
@@ -768,10 +781,12 @@ async def main():
                 from digital_twin_bridge.drive_server import _traffic_actor_ids
                 fleet_obj = runtime.get("fleet")
                 fleet_ids = fleet_obj.actor_ids() if fleet_obj is not None else set()
+                slots_obj = runtime.get("slots")
+                slot_names = slots_obj.names() if slots_obj is not None else config.voices_roles
                 def orphan(actor) -> bool:
                     # coexist branch: other clients' actors are never orphans
                     return (not config.protect_foreign_actors) or is_drive_owned(
-                        actor, config.voices_roles, config.keep_voices_ego)
+                        actor, slot_names, config.keep_voices_ego)
                 vehicles = [v for v in world.get_actors().filter("vehicle.*")
                             if v.id not in _traffic_actor_ids
                             and v.id not in fleet_ids
@@ -829,6 +844,7 @@ async def main():
     logger.info("  State source: metadata-only V2X registry (no prop spawning)")
     logger.info("  State pub   : %s", publisher.describe() if publisher else "disabled")
     logger.info("  V2X fleet   : %s", ("enabled, up to %d vehicles" % fleet.max_vehicles) if fleet is not None else "disabled")
+    logger.info("  VOICES slots: %s (start-screen default %s)", ", ".join(slots.names()) or "none", slots.default_slot)
     if v2x_ctx is not None:
         logger.info("  V2X feed    : json stream %s:%d, udp %s:%d, decoder %s, roster %s",
                     config.V2X_JSON_STREAM_HOST, config.V2X_JSON_STREAM_PORT,

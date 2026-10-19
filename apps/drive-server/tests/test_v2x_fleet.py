@@ -73,8 +73,11 @@ class FakePlanner:
     def snapped_transform(self, location, yaw_deg=None):
         return carla.Transform(carla.Location(x=location.x, y=0.0, z=0.5), carla.Rotation(yaw=float(yaw_deg or 0.0)))
 
-    def random_destination(self, from_location, min_m=150.0, tries=25):
+    def random_destination(self, from_location, min_m=150.0, tries=25, strict=False):
         return carla.Location(x=from_location.x + 500.0, y=0.0, z=0.0)
+
+    def routable_spawn_points(self):
+        return list(self._map.get_spawn_points())
 
     def splice_to_destination(self, path, destination):
         return list(path) + [("dest", None)]
@@ -253,7 +256,7 @@ def test_set_erv_state_and_despawn(fleet, mock_world):
     reply = fleet.despawn(erv["actor_id"])
     assert reply["type"] == "v2x_vehicle_despawned" and reply["count"] == 1
     assert mock_world.get_actor(erv["actor_id"]).is_destroyed
-    assert fleet.despawn_all() == {"type": "v2x_vehicles_despawned", "count": 1} and not fleet.has_vehicles
+    assert fleet.despawn_all() == {"type": "v2x_vehicles_despawned", "count": 1, "parked": 0} and not fleet.has_vehicles
 
 
 def test_destroyed_actors_are_pruned_and_world_updates_reset(fleet, mock_world):
@@ -303,12 +306,16 @@ def test_stuck_vehicles_are_rerouted_then_moved_then_removed(fleet, mock_world):
     for _ in range(3):
         fleet.clock.t += 3.5
         fleet.tick()
+    for _ in range(3):
+        fleet.tick()   # the controller is rebuilt once the snapshot shows the new pose
     assert fv.stuck_recoveries == 2 and fv.agent is not None   # moved to a free spawn point and rebound
     assert actor.get_transform().location.x >= 300.0
     for _ in range(3):
         fleet.clock.t += 3.5
         fleet.tick()
     assert fv.stuck_recoveries == 3
+    for _ in range(3):
+        fleet.tick()
     for _ in range(3):
         fleet.clock.t += 3.5
         fleet.tick()

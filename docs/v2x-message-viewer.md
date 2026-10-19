@@ -13,6 +13,16 @@ and the browser ego when it drives under one of the PATH scenario slots.
 Web-app traffic, placed cars and HIL_Tool `bkg` traffic have no V2X messages
 and are not listed. Nothing is synthesized.
 
+The start screen's **VOICES** block (`PUBLISH` / `LOCAL` plus a slot picker,
+default `PATH-BG-5`) gives the ego a scenario name for the session so the DT
+adapter binds it and generates its BSM, which then flows back through the
+TENA feed like any other vehicle. The picker shows who holds each slot
+(`free`, your parked car, another browser, the fleet, the DT manual car or
+background traffic). Ending the session parks the car instead of destroying
+it, because the adapter binds a name once per DT session; the next session
+under that slot adopts the same car. See "VOICES scenario slots" in
+`v2x-driving-models.md` for the server side.
+
 ## Where the messages come from
 
 ```

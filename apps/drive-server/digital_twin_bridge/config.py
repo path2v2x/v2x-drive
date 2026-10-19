@@ -95,6 +95,8 @@ class Config:
     TM_OSM_MODE: str = "1"             # "0" keeps traffic cars at dead ends instead of deleting them; left on until the traffic hang is understood
     VOICES_EGO_ROLE: str = ""          # e.g. "PATH-M-1": first session's ego takes this role_name
     KEEP_VOICES_EGO: str = "1"         # "1": a VOICES-role ego survives session end; next session adopts it
+    VOICES_SLOT_FILE: str = ""         # parked slot cars (adoptable after a restart); empty: ~/.cache/v2x-drive/voices_slots.json
+    VOICES_SLOT_DEFAULT: str = "PATH-BG-5"  # slot the start screen preselects for "publish to VOICES"
 
     # V2X message viewer: per-vehicle J2735 feeds from the DT (VOICES) stack.
     V2X_FEED_ENABLED: str = "1"

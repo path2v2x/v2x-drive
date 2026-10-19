@@ -134,7 +134,8 @@ def test_streamer_keeper_waits_for_a_young_container(monkeypatch):
     monkeypatch.setattr(keeper, "_run_cmd", fake_run)
     result = keeper.check_once()
     assert result["dt_running"] and not result["streamer_running"] and not result["launched"]
-    assert keeper.launches == 0 and result["container_age_s"] == 30
+    # the fake timestamp carries a fixed fraction, so the age is 30 s give or take the real sub-second
+    assert keeper.launches == 0 and 29 <= result["container_age_s"] <= 31
     fake_run.age = 600.0
     result = keeper.check_once()
     assert result["launched"] and keeper.launches == 1

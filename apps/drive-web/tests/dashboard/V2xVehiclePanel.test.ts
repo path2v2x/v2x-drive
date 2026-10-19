@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import V2xVehiclePanel from '$lib/components/V2xVehiclePanel.svelte';
-import { connect, disconnect, driveConnected, sessionState } from '$lib/stores/driveSocket';
+import { connect, disconnect, driveConnected, sessionState, voicesSlots } from '$lib/stores/driveSocket';
 import { fleetEvents, fleetStats, fleetTracks, fleetVehicles, resetFleetStore } from '$lib/stores/v2xFleet';
 import type { V2xFleetVehicle } from '$lib/types';
 
@@ -58,6 +59,7 @@ beforeEach(() => {
 	MockWebSocket.instances = [];
 	vi.stubGlobal('WebSocket', MockWebSocket);
 	resetFleetStore();
+	voicesSlots.set([]);
 	connect('wss://drive.example.test');
 	MockWebSocket.instances.at(-1)!.open();
 });
@@ -71,9 +73,40 @@ describe('V2xVehiclePanel', () => {
 	it('asks for the fleet on mount and explains how to use it when empty', () => {
 		render(V2xVehiclePanel, { props: { onClose: () => {} } });
 		const socket = MockWebSocket.instances.at(-1)!;
-		expect(socket.sentJson().at(-1)).toEqual({ type: 'list_v2x_vehicles' });
+		expect(socket.sentJson().slice(-2)).toEqual([{ type: 'list_v2x_vehicles' }, { type: 'list_voices_slots' }]);
 		expect(screen.getByTestId('fleet-empty')).toBeInTheDocument();
 		expect(screen.getByText('fleet status unknown')).toBeInTheDocument();
+		expect(screen.queryByTestId('erv-slot')).toBeNull(); // no scenario slots known yet
+	});
+
+	it('offers the ambulance slot and spawns the ERV under it', async () => {
+		voicesSlots.set([
+			{ name: 'PATH-M-1', vehicle_type: 'vehicle.ambulance.ford', bsm_id: '11111110', emergency: true, state: 'free', holder: '', actor_id: null },
+			{ name: 'PATH-BG-5', vehicle_type: 'vehicle.lincoln.mkz', bsm_id: '11111115', emergency: false, state: 'free', holder: '', actor_id: null }
+		]);
+		render(V2xVehiclePanel, { props: { onClose: () => {} } });
+		const socket = MockWebSocket.instances.at(-1)!;
+		await tick();
+		const select = screen.getByTestId('erv-slot') as HTMLSelectElement;
+		expect(select.value).toBe('PATH-M-1'); // preselected: free ambulance slot, civilian slots are not offered
+		expect(Array.from(select.options).map((o) => o.text.trim())).toEqual(['local only (no BSMs)', 'PATH-M-1 · free']);
+		await fireEvent.change(screen.getByLabelText('Emergency vehicle placement'), { target: { value: 'random' } });
+		await fireEvent.click(screen.getByTestId('spawn-erv'));
+		expect(socket.sentJson().at(-1)).toMatchObject({ type: 'spawn_v2x_vehicle', kind: 'erv', spawn: 'random', role: 'PATH-M-1' });
+		expect(screen.getByRole('status').textContent).toContain('as PATH-M-1');
+		// the slot got taken meanwhile (DT manual car): refused locally
+		voicesSlots.set([
+			{ name: 'PATH-M-1', vehicle_type: 'vehicle.ambulance.ford', bsm_id: '11111110', emergency: true, state: 'taken', holder: 'foreign', actor_id: 101 }
+		]);
+		await tick();
+		const before = socket.sent.length;
+		await fireEvent.click(screen.getByTestId('spawn-erv'));
+		expect(socket.sent.length).toBe(before);
+		expect(screen.getByRole('status').textContent).toContain('taken by the DT manual car');
+		// local only still works
+		await fireEvent.change(select, { target: { value: '' } });
+		await fireEvent.click(screen.getByTestId('spawn-erv'));
+		expect(socket.sentJson().at(-1)).not.toHaveProperty('role');
 	});
 
 	it('refuses ego-relative spawns without a session and sends them with one', async () => {

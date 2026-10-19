@@ -55,6 +55,7 @@ class RoutePlanner:
         self._grp = None
         self._lock = threading.Lock()
         self._rng = rng or random.Random()
+        self._routable = None
 
     @property
     def carla_map(self):
@@ -107,8 +108,12 @@ class RoutePlanner:
         return carla.Transform(carla.Location(x=loc.x, y=loc.y, z=loc.z + dz),
                                carla.Rotation(pitch=0.0, yaw=transform.rotation.yaw, roll=0.0))
 
-    def random_destination(self, from_location, min_m: float = 150.0, tries: int = 25):
-        """A spawn-point location at least ``min_m`` away with a route from ``from_location``."""
+    def random_destination(self, from_location, min_m: float = 150.0, tries: int = 25, strict: bool = False):
+        """A spawn-point location at least ``min_m`` away with a route from ``from_location``.
+
+        ``strict`` returns None when no candidate has a route (the car sits on a road
+        fragment with no way out); otherwise a far point is returned as a last resort.
+        """
         points = list(self._map.get_spawn_points())
         self._rng.shuffle(points)
         for sp in points[:tries]:
@@ -117,10 +122,26 @@ class RoutePlanner:
                 continue
             if len(self.trace(from_location, loc)) >= 5:
                 return loc
+        if strict:
+            return None
         for sp in points:
             if math.hypot(sp.location.x - from_location.x, sp.location.y - from_location.y) >= min_m / 2:
                 return sp.location
         return points[0].location if points else from_location
+
+    def routable_spawn_points(self) -> list:
+        """Spawn points a route leads away from, cached per map.
+
+        The RFS road graph has dead fragments (14 of 95 spawn points): a car placed on
+        one can never plan a route, so random placement and stuck relocation avoid them.
+        """
+        if self._routable is None:
+            points = list(self._map.get_spawn_points())
+            good = [sp for sp in points
+                    if self.random_destination(sp.location, tries=len(points), strict=True) is not None]
+            logger.info("Routable spawn points: %d of %d", len(good), len(points))
+            self._routable = good
+        return list(self._routable)
 
     # ── manoeuvre paths ──
 

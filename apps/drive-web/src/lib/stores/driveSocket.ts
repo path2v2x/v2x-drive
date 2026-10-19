@@ -30,7 +30,9 @@ import type {
 	TeleportCommand,
 	TeleportErrorMessage,
 	TeleportedMessage,
-	TeleportStatus
+	TeleportStatus,
+	VoicesSlot,
+	VoicesSlotsMessage
 } from '$lib/types';
 import { v2xZones } from './v2xZones';
 
@@ -71,6 +73,16 @@ export const v2xAlerts = writable<V2xAlert[]>([]);
 export const trajectoryList = writable<TrajectoryInfo[]>([]);
 export const trajectoryStatus = writable<TrajectoryStatus>({ active: false });
 export const dynamicActors = writable<DynamicActor[]>([]);
+/** VOICES scenario slots (PATH-BG-5 …) the ego may publish under; refreshed by requestVoicesSlots(). */
+export const voicesSlots = writable<VoicesSlot[]>([]);
+export const voicesSlotsInfo = writable<{ available: boolean; default: string; local_org: string; scenario: string }>({
+	available: false,
+	default: '',
+	local_org: '',
+	scenario: ''
+});
+/** Scenario slot the current session's ego publishes under ('' = none). */
+export const egoVoicesRole = writable<string>('');
 export const teleportStatus = writable<TeleportStatus>({
 	state: 'idle',
 	message: null,
@@ -394,7 +406,20 @@ function handleServerMessage(msg: DriveMessage): void {
 			sessionState.set('driving');
 			vehicleId.set(msg.vehicle_id as number);
 			objectsCount.set(msg.objects_count as number);
+			egoVoicesRole.set(typeof msg.voices_role === 'string' ? msg.voices_role : '');
 			break;
+
+		case 'voices_slots': {
+			const slots = msg as VoicesSlotsMessage;
+			voicesSlots.set(Array.isArray(slots.slots) ? slots.slots : []);
+			voicesSlotsInfo.set({
+				available: Boolean(slots.available),
+				default: typeof slots.default === 'string' ? slots.default : '',
+				local_org: typeof slots.local_org === 'string' ? slots.local_org : '',
+				scenario: typeof slots.scenario === 'string' ? slots.scenario : ''
+			});
+			break;
+		}
 
 		case 'telemetry':
 			telemetry.set(msg as unknown as VehicleTelemetry);
@@ -434,6 +459,7 @@ function handleServerMessage(msg: DriveMessage): void {
 			sessionState.set('idle');
 			vehicleId.set(null);
 			dynamicActors.set([]);
+			egoVoicesRole.set('');
 			break;
 
 		case 'vehicle_list':
@@ -718,11 +744,22 @@ export function setDriveMap(map: DriveMapId): void {
 	send({ type: 'set_map', map });
 }
 
-export function startSession(start: string, end: string, vehicle?: string): void {
+/**
+ * Start a drive session. ``voicesRole`` names the VOICES scenario slot the ego publishes
+ * under ('' = none); omitted, the server applies its own default.
+ */
+export function startSession(start: string, end: string, vehicle?: string, voicesRole?: string): void {
 	resetTeleportStatus();
 	sessionState.set('reconstructing');
 	lastError.set(null);
-	send({ type: 'start_session', start, end, vehicle: vehicle ?? 'vehicle.tesla.model3' });
+	const msg: DriveMessage = { type: 'start_session', start, end, vehicle: vehicle ?? 'vehicle.tesla.model3' };
+	if (voicesRole !== undefined) msg.voices_role = voicesRole;
+	send(msg);
+}
+
+/** Ask which scenario slots exist and who holds them (reply: voices_slots). */
+export function requestVoicesSlots(): boolean {
+	return sendDriveMessage({ type: 'list_voices_slots' });
 }
 
 export function sendControl(steer: number, throttle: number, brake: number, reverse: boolean = false): void {

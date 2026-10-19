@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { driveConnected, sessionState } from '$lib/stores/driveSocket';
+	import { driveConnected, requestVoicesSlots, sessionState, voicesSlots } from '$lib/stores/driveSocket';
 	import {
 		clearFleetEvents,
 		despawnFleet,
@@ -15,7 +15,7 @@
 		spawnErv,
 		stateTone
 	} from '$lib/stores/v2xFleet';
-	import type { V2xFleetVehicle } from '$lib/types';
+	import type { V2xFleetVehicle, VoicesSlot } from '$lib/types';
 
 	interface Props {
 		onClose: () => void;
@@ -26,6 +26,33 @@
 	let ervProfile = $state<'ambulance' | 'fire' | 'police'>('ambulance');
 	let ervPlacement = $state<'behind' | 'random'>('behind');
 	let ervDistance = $state(150);
+	// VOICES slot the ERV publishes under: null until the slot list arrives, '' = local only.
+	let ervSlot = $state<string | null>(null);
+	let ervSlotOptions = $derived($voicesSlots.filter((s) => s.emergency));
+	let ervSlotChoice = $derived(ervSlotOptions.find((s) => s.name === ervSlot) ?? null);
+
+	$effect(() => {
+		// preselect the ambulance slot the first time it shows up free or parked
+		if (ervSlot !== null) return;
+		const open = ervSlotOptions.find((s) => s.state === 'free' || s.state === 'kept');
+		if (open) ervSlot = open.name;
+		else if (ervSlotOptions.length > 0) ervSlot = '';
+	});
+
+	function slotLabel(s: VoicesSlot): string {
+		switch (s.state) {
+			case 'free':
+				return 'free';
+			case 'kept':
+				return 'parked, reusable';
+			case 'session':
+				return 'driven from a browser';
+			case 'fleet':
+				return 'in use by the fleet';
+			default:
+				return s.emergency ? 'taken by the DT manual car' : 'taken by background traffic';
+		}
+	}
 	let civilianCount = $state(2);
 	let civilianAhead = $state(60);
 	let note = $state('');
@@ -43,8 +70,12 @@
 
 	onMount(() => {
 		requestFleet();
-		// states ride on telemetry; stats and tracks only come with a list request
-		const timer = setInterval(requestFleet, 5000);
+		requestVoicesSlots();
+		// states ride on telemetry; stats, tracks and slot holders only come with a list request
+		const timer = setInterval(() => {
+			requestFleet();
+			requestVoicesSlots();
+		}, 5000);
 		return () => clearInterval(timer);
 	});
 
@@ -74,7 +105,13 @@
 			note = 'Start a drive session to spawn behind the ego, or choose a random spot.';
 			return;
 		}
-		note = spawnErv(ervProfile, ervPlacement, ervDistance) ? `Spawning ${ervProfile}…` : 'Not connected.';
+		const role = ervSlot ?? '';
+		if (ervSlotChoice && !(ervSlotChoice.state === 'free' || ervSlotChoice.state === 'kept')) {
+			note = `${ervSlotChoice.name} is ${slotLabel(ervSlotChoice)}; pick another slot or "local only".`;
+			return;
+		}
+		const sent = spawnErv(ervProfile, ervPlacement, ervDistance, role);
+		note = sent ? `Spawning ${ervProfile}${role ? ` as ${role}` : ''}…` : 'Not connected.';
 	}
 
 	function doSpawnCivilians() {
@@ -113,7 +150,7 @@
 				onclick={() => despawnFleet()}
 				disabled={vehicles.length === 0}
 				class="cursor-pointer rounded bg-red-700/80 px-2 py-0.5 text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-40"
-				title="Destroy every fleet vehicle"
+				title="Destroy every fleet vehicle; cars under a VOICES slot are parked instead"
 			>Despawn all</button>
 			<button
 				type="button"
@@ -150,6 +187,23 @@
 				data-testid="spawn-erv"
 			>Spawn ERV</button>
 		</div>
+		{#if ervSlotOptions.length > 0}
+			<div class="flex items-center gap-2">
+				<span class="text-gray-400">publish as</span>
+				<select bind:value={ervSlot} aria-label="VOICES slot for the emergency vehicle" data-testid="erv-slot"
+					class="rounded border border-gray-600 bg-gray-800 px-1 py-1 text-gray-100">
+					<option value="">local only (no BSMs)</option>
+					{#each ervSlotOptions as s (s.name)}
+						<option value={s.name} disabled={s.state === 'taken' || s.state === 'session' || s.state === 'fleet'}>
+							{s.name} · {slotLabel(s)}
+						</option>
+					{/each}
+				</select>
+				<span class="text-[10px] text-gray-500" title="A slot car is parked, not destroyed, when removed: the DT adapter binds the name once per session.">
+					{ervSlot ? 'BSMs via the DT adapter' : 'not on the VOICES network'}
+				</span>
+			</div>
+		{/if}
 		<div class="flex items-center gap-2">
 			<input type="number" bind:value={civilianCount} min="1" max="8" aria-label="Number of civilians"
 				class="w-12 rounded border border-gray-600 bg-gray-800 px-1 py-1 font-mono text-gray-100" />
@@ -184,19 +238,25 @@
 					<div class="mb-1 rounded bg-gray-800/60 px-2 py-1" data-testid="fleet-vehicle">
 						<div class="flex items-center gap-2">
 							<span class="font-mono text-gray-100">{v.name}</span>
+							{#if v.slot}
+								<span class="rounded bg-rose-900/60 px-1 text-[10px] text-rose-200" title="Published to the VOICES network under this scenario name">VOICES</span>
+							{/if}
 							<span class="rounded px-1.5 py-0.5 text-[10px] font-semibold {toneClass(v.state)}" data-testid="fleet-state">{v.state}</span>
 							<span class="ml-auto font-mono text-[10px] text-gray-400">{kmh(v.speed_mps)}</span>
 							<button
 								type="button"
-								onclick={() => despawnFleetVehicle(v.actor_id)}
+								onclick={() => despawnFleetVehicle(v.actor_id, Boolean(v.parked))}
 								class="cursor-pointer px-1 text-gray-500 hover:text-white"
-								aria-label="Despawn {v.name}"
+								aria-label="{v.parked ? 'Release' : v.slot ? 'Park' : 'Despawn'} {v.name}"
+								title={v.parked ? 'Destroy the parked car' : v.slot ? 'Park beside the road; the slot stays bound to this car' : 'Destroy'}
 							>×</button>
 						</div>
 						<div class="truncate text-[10px] text-gray-500" title={v.reason}>
 							{v.profile}{v.reason ? ` · ${v.reason}` : ''}{v.dist_to_destination_m != null ? ` · ${v.dist_to_destination_m.toFixed(0)} m to go` : ''}
 						</div>
-						{#if v.kind === 'erv'}
+						{#if v.parked}
+							<div class="mt-1 text-[10px] text-gray-500">parked beside the road, slot still bound; spawn {v.slot} again to reuse it</div>
+						{:else if v.kind === 'erv'}
 							<div class="mt-1 flex flex-wrap gap-1 text-[10px]">
 								<button type="button" onclick={() => toggle(v, 'siren')} aria-pressed={Boolean(v.siren)}
 									class="cursor-pointer rounded px-1.5 py-0.5 {v.siren ? 'bg-rose-600 text-white' : 'bg-gray-700 text-gray-300'}">siren</button>

@@ -6,7 +6,11 @@ CARLA vehicle, ours or not), the ERV tracker fed from the viewer's TENA
 feed and from CARLA light states, one behaviour decision per vehicle at
 10 Hz (round robin), one control per vehicle at 20 Hz applied as a batch.
 Vehicles carry ``drive_civ_<n>`` / ``drive_erv_<n>`` role names, so the
-drive server's ownership rules treat them as ours.
+drive server's ownership rules treat them as ours.  A vehicle spawned under
+a VOICES scenario slot (``role="PATH-M-1"``) carries that name instead, is
+published by the DT adapter, and is parked rather than destroyed when it is
+removed, because the adapter binds a name to one actor per DT session
+(see ``voices_slots``).
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from digital_twin_bridge.v2x_behaviors.erv_tracker import ErvTracker
 from digital_twin_bridge.v2x_behaviors.feed_sources import HubErvSource, LightStateErvSource
 from digital_twin_bridge.v2x_behaviors.geometry import INF, relative_position, same_direction
 from digital_twin_bridge.v2x_behaviors.profiles import civilian_profile, erv_profile, profile_to_dict
+from digital_twin_bridge.voices_slots import park_actor, reset_adopted_actor
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +87,16 @@ class FleetVehicle:
     last_control: object = None
     stuck_since: Optional[float] = None
     stuck_recoveries: int = 0
+    slot: str = ""              # VOICES scenario slot this car publishes under, if any
+    parked: bool = False        # a slot car taken off the road but kept for the adapter's binding
+    parked_at: float = 0.0
+    # After a teleport (adoption, stuck recovery) the client snapshot lags a tick or two: the
+    # controller is built only after this tick and once the snapshot shows the car near the pose.
+    bind_not_before: int = 0
+    bind_pose: object = None
 
     def state(self) -> str:
-        return self.fsm.state.value
+        return "PARKED" if self.parked else self.fsm.state.value
 
     def summary(self, now: float) -> dict:
         d = self.decision
@@ -114,11 +126,13 @@ class FleetVehicle:
             "lane_change": self.lane_change.get("direction") if self.lane_change else None,
             "passing": self.pass_job is not None,
             "spawned_at": self.spawned_at,
+            "slot": self.slot,
+            "parked": self.parked,
         }
         if self.kind == "erv":
             out.update({
-                "siren": bool(d.siren) if d else True,
-                "lights": bool(d.lights) if d else True,
+                "siren": (bool(d.siren) if d else True) and not self.parked,
+                "lights": (bool(d.lights) if d else True) and not self.parked,
                 "response_type": d.response_type if d else "",
                 "manual": self.fsm.state == ErvState.MANUAL,
                 "doors_open": self.doors_open,
@@ -185,10 +199,12 @@ class FleetVehicle:
 
 class Fleet:
     def __init__(self, world, carla_map, config=None, hub=None, codec=None, registry=None,
-                 planner=None, agent_factory=None, client_factory=None, rng=None, now_fn=time.time):
+                 planner=None, agent_factory=None, client_factory=None, rng=None, now_fn=time.time,
+                 slots=None):
         self._world = world
         self._map = carla_map
         self._config = config
+        self._slots = slots  # voices_slots.SlotService; None = scenario slots unavailable
         self.max_vehicles = int(getattr(config, "FLEET_MAX_VEHICLES", 12) or 12)
         self.decision_every = max(1, int(getattr(config, "FLEET_DECISION_EVERY_N_TICKS", 2) or 2))
         self._base_decision_every = self.decision_every
@@ -283,7 +299,11 @@ class Fleet:
 
     @property
     def has_vehicles(self) -> bool:
-        return bool(self._vehicles)
+        """Any vehicle on the road (parked slot cars do not count)."""
+        return any(not fv.parked for fv in self._vehicles.values())
+
+    def active_count(self) -> int:
+        return sum(1 for fv in self._vehicles.values() if not fv.parked)
 
     def actor_ids(self) -> set:
         return set(self._vehicles.keys())
@@ -303,15 +323,17 @@ class Fleet:
             out.append({
                 "actor_id": fv.actor_id, "kind": fv.kind, "name": fv.name, "state": fv.state(),
                 "pos": [round(s.x, 2), round(s.y, 2)] if s else None, "yaw": round(s.yaw, 1) if s else None,
-                "speed_mps": round(s.speed, 2) if s else None,
+                "speed_mps": round(s.speed, 2) if s else None, "parked": fv.parked,
             })
         return out
 
     def stats(self) -> dict:
         ms = sorted(self._tick_ms)
         p95 = ms[int(len(ms) * 0.95) - 1] if len(ms) >= 20 else (ms[-1] if ms else 0.0)
+        active = self.active_count()
         return {
-            "count": len(self._vehicles),
+            "count": active,
+            "parked": len(self._vehicles) - active,
             "max": self.max_vehicles,
             "tick_ms_avg": round(sum(ms) / len(ms), 2) if ms else 0.0,
             "tick_ms_p95": round(p95, 2),
@@ -339,11 +361,16 @@ class Fleet:
     # ── spawning ──
 
     def spawn(self, kind: str = "civilian", blueprint: Optional[str] = None, profile: Optional[str] = None,
-              spawn=None, destination="random", params: Optional[dict] = None, ego_actor=None) -> dict:
-        import carla
+              spawn=None, destination="random", params: Optional[dict] = None, ego_actor=None,
+              role: Optional[str] = None) -> dict:
+        """Spawn a civilian or an ERV.
+
+        ``role`` names a VOICES scenario slot (e.g. ``PATH-M-1``) the car publishes under:
+        the slot is validated, and a car parked under that name earlier (by the fleet or by
+        a browser session) is adopted and moved to the requested pose instead of spawning.
+        """
         with self._lock:
-            if len(self._vehicles) >= self.max_vehicles:
-                raise RuntimeError("fleet is full (%d vehicles)" % self.max_vehicles)
+            role = str(role or "").strip()
             kind_key = str(kind or "civilian").lower()
             is_erv = kind_key in ERV_KINDS
             kind = "erv" if is_erv else "civilian"
@@ -351,35 +378,57 @@ class Fleet:
                 prof = erv_profile(profile or ("ambulance" if kind_key in ("erv", "emergency") else kind_key), params)
             else:
                 prof = civilian_profile(profile or "civilian", params)
+            parked = None
+            adopt = None
+            if role:
+                parked = next((fv for fv in self._vehicles.values() if fv.parked and fv.slot == role), None)
+                if self._slots is not None:
+                    adopt = self._slots.claim(self._world, role, by="fleet")
+                if adopt is None and parked is not None:
+                    adopt = parked.actor
+            if self.active_count() >= self.max_vehicles:
+                raise RuntimeError("fleet is full (%d vehicles)" % self.max_vehicles)
             bp_id = str(blueprint or prof.blueprint)
             bp_lib = self._world.get_blueprint_library()
             bp = bp_lib.find(bp_id) or bp_lib.find(prof.blueprint)
             if bp is None:
                 fallback = bp_lib.filter("vehicle.lincoln") or bp_lib.filter("vehicle.")
                 bp = fallback[0] if fallback else None
-            if bp is None:
+            if bp is None and adopt is None:
                 raise RuntimeError("no vehicle blueprint for %s" % bp_id)
-            bp_id = getattr(bp, "id", bp_id)
-            self._counter += 1
-            name = ROLE_PREFIX[kind] + str(self._counter)
-            bp.set_attribute("role_name", name)
-            if not is_erv and bp.has_attribute("color"):
-                colors = bp.get_attribute("color").recommended_values
-                if colors:
-                    bp.set_attribute("color", self._rng.choice(list(colors)))
+            if bp is not None:
+                bp_id = getattr(bp, "id", bp_id)
+            if role:
+                name = role
+            else:
+                self._counter += 1
+                name = ROLE_PREFIX[kind] + str(self._counter)
+            if bp is not None:
+                bp.set_attribute("role_name", name)
+                if not is_erv and bp.has_attribute("color"):
+                    colors = bp.get_attribute("color").recommended_values
+                    if colors:
+                        bp.set_attribute("color", self._rng.choice(list(colors)))
             base = self._resolve_spawn(spawn, ego_actor)
             actor = None
+            cand = base
             for attempt in range(6):
                 cand = base
                 if attempt > 0:
                     cand = self.planner().transform_along_lane(base.location, 6.0 * attempt) or base
-                if self._occupied(cand.location, 6.0):
+                if self._occupied(cand.location, 6.0, ignore_id=(adopt.id if adopt is not None else None)):
                     continue
+                if adopt is not None:
+                    reset_adopted_actor(adopt, cand)
+                    actor = adopt
+                    break
                 actor = self._world.try_spawn_actor(bp, cand)
                 if actor is not None:
                     break
             if actor is None:
                 raise RuntimeError("could not spawn %s: no free spot near the requested pose" % bp_id)
+            if adopt is not None:
+                bp_id = str(getattr(actor, "type_id", "") or bp_id)
             now = self._now()
             # The client reports a freshly spawned actor at the origin until the
             # next world tick, so use the spawn pose here and bind the agent
@@ -387,30 +436,43 @@ class Fleet:
             try:
                 dest = self._resolve_destination(destination, cand.location)
             except Exception:
-                try:
-                    actor.destroy()
-                except Exception:
-                    pass
+                if adopt is None:
+                    try:
+                        actor.destroy()
+                    except Exception:
+                        pass
                 raise
+            if parked is not None:
+                self._vehicles.pop(parked.actor_id, None)
             fsm = ErvFsm(prof) if is_erv else CivilianFsm(prof)
             fsm.t_state = now
             fv = FleetVehicle(actor_id=actor.id, actor=actor, kind=kind, name=name, blueprint=bp_id, profile=prof,
-                              agent=None, fsm=fsm, destination=dest, spawned_at=now)
+                              agent=None, fsm=fsm, destination=dest, spawned_at=now, slot=role)
             fv.last_snap = VehicleSnap(actor.id, actor, cand.location.x, cand.location.y, cand.rotation.yaw, 0.0,
                                        *self._extent(actor), None, True, kind)
+            if adopt is not None:
+                fv.bind_not_before = self._tick_i + 3
+                fv.bind_pose = cand.location
             self._vehicles[actor.id] = fv
             self._actors_cache_tick = -10_000  # pick the new actor up next tick
-            logger.info("Fleet: spawned %s %s (%s, actor %d) -> %s", kind, name, bp_id, actor.id,
+            if role and self._slots is not None:
+                self._slots.hold(role, "fleet", marker=actor.id, actor_id=actor.id)
+                self._slots.keeper.forget(role)
+            reason = "adopted" if adopt is not None else "spawned"
+            logger.info("Fleet: %s %s %s (%s, actor %d) -> %s", reason, kind, name, bp_id, actor.id,
                         "(%.0f, %.0f)" % (dest.x, dest.y) if dest is not None else "roaming")
             self._broadcast({"type": "v2x_vehicle_event", "actor_id": actor.id, "name": name, "kind": kind,
-                             "from": None, "to": fsm.state.value, "reason": "spawned", "t": now})
-            return {"type": "v2x_vehicle_spawned", "vehicle": fv.summary(now), "count": len(self._vehicles)}
+                             "from": "PARKED" if parked is not None else None, "to": fsm.state.value,
+                             "reason": reason, "t": now})
+            return {"type": "v2x_vehicle_spawned", "vehicle": fv.summary(now), "count": self.active_count()}
 
     def _resolve_spawn(self, spec, ego_actor):
         import carla
         planner = self.planner()
         if spec is None or spec == "random":
-            points = list(self._map.get_spawn_points())
+            # only spawn points a route leads away from: 14 of the 95 RFS points sit on
+            # road fragments with no way out, and a car placed there can never plan
+            points = list(planner.routable_spawn_points())
             self._rng.shuffle(points)
             for sp in points:
                 if not self._occupied(sp.location, 8.0):
@@ -462,7 +524,11 @@ class Fleet:
         if spec in (None, "none", False):
             return None
         if spec == "random" or spec is True:
-            return self.planner().random_destination(from_location)
+            dest = self.planner().random_destination(from_location, strict=True)
+            if dest is None:
+                raise ValueError("no route leads away from that spot (an isolated road fragment); "
+                                 "spawn somewhere else")
+            return dest
         if isinstance(spec, dict):
             if "x" in spec and "y" in spec:
                 loc = carla.Location(x=float(spec["x"]), y=float(spec["y"]), z=float(spec.get("z", 0.0)))
@@ -475,9 +541,11 @@ class Fleet:
             return wp.transform.location if wp is not None else loc
         raise ValueError("destination must be 'random', 'none' or an object")
 
-    def _occupied(self, location, radius_m: float) -> bool:
+    def _occupied(self, location, radius_m: float, ignore_id: Optional[int] = None) -> bool:
         r2 = radius_m * radius_m
         for actor in self._actor_list(refresh=True):
+            if ignore_id is not None and getattr(actor, "id", None) == ignore_id:
+                continue
             try:
                 loc = actor.get_transform().location
             except Exception:
@@ -488,21 +556,38 @@ class Fleet:
 
     # ── removal ──
 
-    def despawn(self, actor_id: int) -> dict:
+    PARK_REASON = "parked: the scenario slot stays bound to this car"
+
+    def despawn(self, actor_id: int, release: bool = False) -> dict:
+        """Remove a vehicle.  A slot car is parked instead (``release`` destroys it anyway)."""
         with self._lock:
-            fv = self._vehicles.pop(int(actor_id), None)
+            fv = self._vehicles.get(int(actor_id))
             if fv is None:
                 raise ValueError("fleet vehicle %s not found" % actor_id)
+            if fv.slot and not release:
+                if not fv.parked:
+                    self._park(fv, self.PARK_REASON)
+                return {"type": "v2x_vehicle_despawned", "actor_id": fv.actor_id, "count": self.active_count(),
+                        "parked": True}
+            self._vehicles.pop(fv.actor_id, None)
             self._remove(fv, "despawned")
-            return {"type": "v2x_vehicle_despawned", "actor_id": fv.actor_id, "count": len(self._vehicles)}
+            return {"type": "v2x_vehicle_despawned", "actor_id": fv.actor_id, "count": self.active_count(),
+                    "parked": False}
 
-    def despawn_all(self) -> dict:
+    def despawn_all(self, release: bool = False) -> dict:
         with self._lock:
-            ids = list(self._vehicles.keys())
-            for actor_id in ids:
-                fv = self._vehicles.pop(actor_id)
+            removed = parked = 0
+            for actor_id in list(self._vehicles.keys()):
+                fv = self._vehicles[actor_id]
+                if fv.slot and not release:
+                    if not fv.parked:
+                        self._park(fv, self.PARK_REASON)
+                        parked += 1
+                    continue
+                self._vehicles.pop(actor_id)
                 self._remove(fv, "despawned")
-            return {"type": "v2x_vehicles_despawned", "count": len(ids)}
+                removed += 1
+            return {"type": "v2x_vehicles_despawned", "count": removed + parked, "parked": parked}
 
     def _remove(self, fv: FleetVehicle, reason: str) -> None:
         now = self._now()
@@ -512,9 +597,47 @@ class Fleet:
             except Exception as exc:
                 logger.debug("fleet destroy failed for %d: %s", fv.actor_id, exc)
         self.tracker.remove("actor:%d" % fv.actor_id)
+        if self._slots is not None and fv.slot:
+            self._slots.release(fv.slot, marker=fv.actor_id)
+            self._slots.keeper.forget(fv.slot)
         self._broadcast({"type": "v2x_vehicle_event", "actor_id": fv.actor_id, "name": fv.name, "kind": fv.kind,
                          "from": fv.state(), "to": None, "reason": reason, "t": now})
         logger.info("Fleet: %s %s (actor %d)", reason, fv.name, fv.actor_id)
+
+    def _park(self, fv: FleetVehicle, reason: str) -> None:
+        """Take a slot car off the road but keep it in the world: the adapter's binding must survive."""
+        now = self._now()
+        previous = fv.state()
+        fv.agent = None
+        fv.decision = None
+        fv.last_obs = None
+        fv.lane_change = None
+        fv.pass_job = None
+        fv.stop = fv.hard_stop = False
+        fv.stuck_since = None
+        fv.stuck_recoveries = 0
+        fv.arrived = False
+        fv.light_mask = 0
+        self._apply_lights(fv)
+        info = {}
+        try:
+            info = park_actor(self._map, fv.actor)
+        except Exception as exc:
+            logger.debug("fleet park failed for %d: %s", fv.actor_id, exc)
+        fv.parked = True
+        fv.parked_at = now
+        if info.get("moved") and fv.last_snap is not None:
+            s = fv.last_snap
+            fv.last_snap = VehicleSnap(s.actor_id, s.actor, float(info["x"]), float(info["y"]), s.yaw, 0.0,
+                                       s.ext_x, s.ext_y, None, True, s.kind)
+        self.tracker.remove("actor:%d" % fv.actor_id)
+        if self._slots is not None and fv.slot:
+            self._slots.keeper.remember(fv.slot, fv.actor, "fleet")
+            self._slots.release(fv.slot, marker=fv.actor_id)
+        self._broadcast({"type": "v2x_vehicle_event", "actor_id": fv.actor_id, "name": fv.name, "kind": fv.kind,
+                         "from": previous, "to": "PARKED", "reason": reason, "t": now})
+        logger.info("Fleet: parked %s (actor %d)%s: %s", fv.name, fv.actor_id,
+                    " off the road" if info.get("moved") else "", reason)
 
     # ── operator control of an ERV ──
 
@@ -526,6 +649,8 @@ class Fleet:
                 raise ValueError("fleet vehicle %s not found" % actor_id)
             if fv.kind != "erv":
                 raise ValueError("vehicle %s is not an emergency vehicle" % actor_id)
+            if fv.parked:
+                raise ValueError("%s is parked; spawn it again as %s to use it" % (fv.name, fv.slot))
             now = self._now()
             if destination is not None:
                 snap = fv.last_snap
@@ -565,7 +690,7 @@ class Fleet:
             cmds = []
             for i, fv in enumerate(list(self._vehicles.values())):
                 fv.last_snap = table.get(fv.actor_id, fv.last_snap)
-                if fv.agent is None:
+                if fv.parked or fv.agent is None:
                     continue
                 if i % self.decision_every == phase:
                     try:
@@ -630,6 +755,9 @@ class Fleet:
         fv.lane_change = None
         fv.pass_job = None
         if fv.stuck_recoveries > self.STUCK_MAX_RECOVERIES:
+            if fv.slot:
+                self._park(fv, "stuck repeatedly, parked")
+                return
             self._vehicles.pop(fv.actor_id, None)
             self._remove(fv, "despawned")
             logger.warning("Fleet: %s stuck repeatedly, removed", fv.name)
@@ -644,7 +772,7 @@ class Fleet:
                 logger.debug("stuck re-route failed: %s", exc)
                 reason = "stuck: re-route failed"
         else:
-            points = list(self._map.get_spawn_points())
+            points = list(self.planner().routable_spawn_points())
             self._rng.shuffle(points)
             moved = False
             for sp in points:
@@ -654,7 +782,9 @@ class Fleet:
                     tf = self.planner()._lift(sp)
                     fv.actor.set_transform(tf)
                     fv.actor.set_target_velocity(carla.Vector3D(0.0, 0.0, 0.0))
-                    fv.agent = None  # rebound next tick with the new pose
+                    fv.agent = None  # rebound once the snapshot shows the new pose
+                    fv.bind_not_before = self._tick_i + 3
+                    fv.bind_pose = tf.location
                     fv.last_snap = VehicleSnap(fv.actor_id, fv.actor, tf.location.x, tf.location.y, tf.rotation.yaw, 0.0,
                                                snap.ext_x, snap.ext_y, None, True, fv.kind)
                     moved = True
@@ -669,16 +799,40 @@ class Fleet:
     def _bind_agents(self, table: Dict[int, VehicleSnap], now: float) -> None:
         """Build the controller for vehicles the world now reports (valid transform)."""
         for fv in list(self._vehicles.values()):
-            if fv.agent is not None or fv.actor_id not in table:
+            if fv.parked or fv.agent is not None or fv.actor_id not in table:
                 continue
+            if self._tick_i < fv.bind_not_before:
+                continue
+            if fv.bind_pose is not None:
+                s = table[fv.actor_id]
+                far = math.hypot(s.x - fv.bind_pose.x, s.y - fv.bind_pose.y) > 8.0
+                if far and self._tick_i < fv.bind_not_before + 40:
+                    continue  # the teleport has not reached the snapshot yet
+                fv.bind_pose = None
             try:
                 offset = fv.profile.centerline_offset_m if fv.kind == "erv" else 0.0
                 agent = self._make_agent(fv.actor, DEFAULT_SPEED_LIMIT_MPS, offset)
                 if fv.destination is not None:
-                    agent.plan_to(fv.destination)
+                    try:
+                        agent.plan_to(fv.destination)
+                    except Exception as exc:
+                        # the car's reported position may have no route to that destination
+                        # (RFS has dead road fragments): once, try one routed from where it is
+                        import carla
+                        s = table[fv.actor_id]
+                        dest = self.planner().random_destination(carla.Location(x=s.x, y=s.y, z=0.0), strict=True)
+                        if dest is None:
+                            raise
+                        logger.info("Fleet: %s re-routed at start (%s)", fv.name, exc)
+                        fv.destination = dest
+                        agent.plan_to(dest)
                 fv.agent = agent
                 fv.fsm.t_state = now
             except Exception:
+                if fv.slot:
+                    logger.warning("Fleet: controller setup failed for %s, parking it", fv.name, exc_info=True)
+                    self._park(fv, "controller setup failed, parked")
+                    continue
                 logger.warning("Fleet: controller setup failed for %s, removing it", fv.name, exc_info=True)
                 self._vehicles.pop(fv.actor_id, None)
                 self._remove(fv, "despawned")
@@ -743,8 +897,14 @@ class Fleet:
 
     def _update_tracker(self, now: float, table: Dict[int, VehicleSnap], refresh: bool) -> None:
         hub_actor_ids = set()
+        # A fleet ERV under a scenario slot publishes real BSMs through the DT adapter; once the
+        # hub tracks those, the fleet's own announcement would be a second ERV for the civilians.
+        bsm_actor_ids = {t.actor_id for t in self.tracker.tracks() if t.source == "bsm" and t.actor_id is not None}
         for fv in self._vehicles.values():
-            if fv.kind != "erv" or "fleet" not in self.erv_sources:
+            if fv.kind != "erv" or fv.parked or "fleet" not in self.erv_sources:
+                continue
+            if fv.slot and fv.actor_id in bsm_actor_ids:
+                self.tracker.remove("actor:%d" % fv.actor_id)
                 continue
             s = table.get(fv.actor_id)
             if s is None:
