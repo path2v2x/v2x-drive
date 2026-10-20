@@ -227,6 +227,7 @@ function recordWire(
 				p.ptype === 'camera_zoom' ||
 				p.ptype === 'camera_zoomed' ||
 				p.ptype === 'v2x_messages' ||
+				p.ptype === 'v2x_perspective' ||
 				p.kind === 'bin'
 		);
 		wireBuf.splice(evictIdx === -1 ? 0 : evictIdx, 1);
@@ -279,7 +280,7 @@ export type DriveMessageHandler = (msg: DriveMessage) => void;
 const messageHandlers = new Map<string, DriveMessageHandler>();
 const disconnectHooks = new Set<() => void>();
 // High-rate bulk pushes are logged as a size marker rather than verbatim.
-const WIRE_SUMMARIZED_TYPES = new Set(['v2x_messages']);
+const WIRE_SUMMARIZED_TYPES = new Set(['v2x_messages', 'v2x_perspective']);
 
 export function registerDriveMessageHandler(type: string, handler: DriveMessageHandler): () => void {
 	messageHandlers.set(type, handler);

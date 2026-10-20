@@ -5,6 +5,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import CameraViewComponent from '$lib/components/CameraView.svelte';
+	import V2xPerspectivePanel from '$lib/components/V2xPerspectivePanel.svelte';
 	import {
 		clientFps,
 		connect,
@@ -393,6 +394,9 @@
 		{#if note}
 			<div class="mt-2 truncate text-[11px] text-amber-300" role="status">{note}</div>
 		{/if}
+		<div class="mt-3 border-t border-white/10 pt-2">
+			<V2xPerspectivePanel />
+		</div>
 		<div class="mt-auto pt-3 text-[10px] text-gray-500">read-only: the editor never moves or deletes anything but its camera</div>
 	</aside>
 

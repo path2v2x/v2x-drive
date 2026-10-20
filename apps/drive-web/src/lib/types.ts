@@ -657,3 +657,62 @@ export interface BgTrafficStatus extends DriveMessage {
 	last_line?: string;
 	error?: string;
 }
+
+/** What one connected vehicle transmits: its latest BSM as a receiver would see it. */
+export interface V2xPerspectiveTx {
+	msg_type: string;
+	t_rx: number;
+	age_s: number;
+	rate_hz: number;
+	count: number;
+	source: V2xFeedSource;
+	size: number;
+	summary: V2xBsmSummary | null;
+	error: string | null;
+}
+
+/** One sender a vehicle hears inside its reception radius. */
+export interface V2xPerspectiveRx {
+	key: string;
+	name: string;
+	actor_id: number | null;
+	kind: V2xVehicleKind;
+	org: string;
+	emergency: boolean;
+	distance_m: number;
+	bearing_deg: number | null;
+	rel_bearing_deg: number | null;
+	msg_type: string;
+	age_s: number | null;
+	rate_hz: number;
+	source: V2xFeedSource;
+	summary: V2xBsmSummary | null;
+}
+
+export interface V2xPerspectiveVehicle {
+	key: string;
+	actor_id: number | null;
+	name: string;
+	kind: V2xVehicleKind;
+	subkind: string;
+	org: string;
+	emergency: boolean;
+	pos: number[] | null;
+	yaw: number | null;
+	speed_mps: number | null;
+	tx: V2xPerspectiveTx | null;
+	rx: V2xPerspectiveRx[];
+	rx_count: number;
+}
+
+/** The per-vehicle V2X view, pushed every interval_ms while subscribed (v2x_perspective.py). */
+export interface V2xPerspectiveMessage extends DriveMessage {
+	type: 'v2x_perspective';
+	active: boolean;
+	ts?: number;
+	radius_m: number | null;
+	interval_ms?: number;
+	vehicles: V2xPerspectiveVehicle[];
+	count: number;
+	transmitting?: number;
+}

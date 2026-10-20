@@ -89,6 +89,9 @@ CARLA `Special1` light state, Ctrl+L in the DT manual control) and
 | `v2x_list_vehicles` | `v2x_vehicle_list {version, ts, feed, vehicles[]}`; also pushed whenever the table changes while the client watches (list requested in the last 60 s or any subscription) |
 | `v2x_subscribe {keys[], detail: compact\|full}` | `v2x_subscribed {keys[], detail, unknown[]}` |
 | `v2x_unsubscribe {keys[]}` (no keys = all) | `v2x_subscribed {keys[]}` |
+| `v2x_perspective_subscribe {radius_m?, interval_ms?}` | `v2x_perspective {active, radius_m, interval_ms, count, transmitting, vehicles[{key, name, kind, subkind, org, emergency, pos, yaw, speed_mps, tx{msg_type, t_rx, age_s, rate_hz, count, source, size, summary}, rx[{key, name, kind, org, emergency, distance_m, bearing_deg, rel_bearing_deg, msg_type, age_s, rate_hz, source, summary}], rx_count}]}` (the reply, then pushed every `interval_ms`) |
+| `v2x_perspective_set {radius_m}` | `v2x_perspective` |
+| `v2x_perspective_unsubscribe` | `v2x_perspective {active: false}` |
 | `v2x_decode {raw_hex}` | `v2x_decoded {raw_hex, msg_type, decoded, summary, error}` |
 | | `v2x_messages {dropped, batch[]}` pushed at most 10 times a second, ≤ 400 rows |
 
@@ -114,7 +117,29 @@ from `~/.dt_scenario_config` → `scenario_files/<VUG_SCENARIO_FILE>`),
 `V2X_FEED_STALE_S` (3), `V2X_DECODE_CACHE` (4096), `V2X_STREAMER_AUTOLAUNCH`,
 `V2X_STREAMER_CONTAINER` (dt-core).
 
-## Using it
+## The vehicle perspective (what the page shows)
+
+The left column of `/drive` (under the HUD) and of `/editor` (under the details)
+carries a permanent "V2X" block: one row per connected vehicle, that is every
+vehicle with a real feed on TENA (our scenario cars, the browser ego when it
+publishes, the other sites' ghosts). A row expands into two blocks that update
+in place, never as a log:
+
+* **sends**: the vehicle's own latest BSM as any receiver would decode it (rate,
+  speed, heading, id, msgCnt, position, siren/lights, age, source, size).
+* **hears**: the latest BSM of every other transmitting vehicle inside the
+  reception radius, nearest first, with the distance between the two vehicles,
+  where the sender sits relative to the vehicle's heading (ahead, behind, left,
+  right) and the sender's speed. A vehicle never hears itself.
+
+The radius (default 300 m, 10 to 5000 m, remembered per browser) stands in for
+radio range: TENA delivers every message everywhere, so the cut is applied on the
+receiving side, like a real onboard unit that only hears what is in range. The
+distance is measured between the CARLA actors (for ghosts that is the position the
+adapter set from the sender's BSM), so it is the ground truth at the moment of the
+snapshot. Snapshots are pushed twice a second.
+
+## Using it (scripts)
 
 * Lobby: **V2X MESSAGE VIEWER**. Driving: **V2X** in the bottom-left bar.
   Both toggle the floating vehicle list; it works with or without a drive

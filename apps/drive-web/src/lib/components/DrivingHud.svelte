@@ -1,6 +1,7 @@
 <script lang="ts">
 	// The pygame manual_control.py HUD: a translucent column on the left of the
 	// camera with the telemetry in that script's line order.
+	import type { Snippet } from 'svelte';
 	import type { VehicleTelemetry } from '$lib/types';
 	import {
 		CollisionHistory,
@@ -18,9 +19,11 @@
 		clientFps?: number;
 		inputMode?: 'keyboard' | 'wheel';
 		connected?: boolean;
+		/** Interactive block docked under the telemetry (the V2X perspective). */
+		children?: Snippet;
 	}
 
-	let { telemetry, clientFps = 0, inputMode = 'keyboard', connected = true }: Props = $props();
+	let { telemetry, clientFps = 0, inputMode = 'keyboard', connected = true, children }: Props = $props();
 
 	const history = new CollisionHistory(200);
 	let polyline = $state('');
@@ -52,7 +55,7 @@
 </script>
 
 <aside
-	class="absolute inset-y-0 left-0 z-20 w-[300px] max-w-[46vw] overflow-hidden bg-black/40 px-3 py-2 font-mono text-[12px] leading-[18px] text-gray-100 select-none pointer-events-none backdrop-blur-[2px]"
+	class="absolute inset-y-0 left-0 z-20 flex w-[300px] max-w-[46vw] flex-col overflow-hidden bg-black/40 px-3 py-2 font-mono text-[12px] leading-[18px] text-gray-100 select-none pointer-events-none backdrop-blur-[2px]"
 	data-testid="driving-hud"
 	aria-label="Driving HUD"
 >
@@ -105,7 +108,13 @@
 		<div class="text-gray-500">none within 200 m</div>
 	{/each}
 
-	<div class="absolute inset-x-3 bottom-2 flex items-center justify-between text-[10px] text-gray-400">
+	{#if children}
+		<div class="mt-2 min-h-0 flex-1 overflow-y-auto border-t border-white/10 pt-2 pointer-events-auto select-text" data-testid="hud-dock">
+			{@render children()}
+		</div>
+	{/if}
+
+	<div class="mt-auto flex shrink-0 items-center justify-between pt-1 text-[10px] text-gray-400">
 		<span><span class="inline-block h-1.5 w-1.5 rounded-full {connected ? 'bg-green-400' : 'bg-red-500'}"></span> {inputMode === 'wheel' ? 'Wheel' : 'WASD'}</span>
 		<span>H: hide</span>
 	</div>

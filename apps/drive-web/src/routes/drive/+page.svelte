@@ -83,7 +83,7 @@
 	import TrajectoryPanel from '$lib/components/TrajectoryPanel.svelte';
 	import TeleportPanel from '$lib/components/TeleportPanel.svelte';
 	import PacketLogPanel from '$lib/components/PacketLogPanel.svelte';
-	import V2xWindows from '$lib/components/V2xWindows.svelte';
+	import V2xPerspectivePanel from '$lib/components/V2xPerspectivePanel.svelte';
 	import V2xVehiclePanel from '$lib/components/V2xVehiclePanel.svelte';
 	import CameraSettingsPanel from '$lib/components/CameraSettingsPanel.svelte';
 	import ScenarioPicker from '$lib/components/ScenarioPicker.svelte';
@@ -91,7 +91,6 @@
 	import { v2xZones } from '$lib/stores/v2xZones';
 	import { checkActorGeofenceProximity, resetActorGeofenceProximity } from '$lib/stores/actorGeofences';
 	import { syncV2xZones } from '$lib/stores/driveSocket';
-	import { closeTopV2xWindow, toggleV2xViewer, v2xViewerOpen } from '$lib/stores/v2xViewer';
 	import { shouldSyncZone } from '$lib/zoneRules';
 	import { fetchMapDataFull, type MapDataResponse } from '$lib/api';
 	import { loadRuntimeConfig, resolveWsUrl } from '$lib/runtime-config';
@@ -559,7 +558,6 @@
 		{ id: 'trajectory', label: 'Trajectory', icon: RAIL_ICONS.trajectory, active: showTrajectoryPanel, onClick: () => togglePanel('trajectory') },
 		{ id: 'teleport', label: 'Teleport', title: "Teleport this session's ego to a coordinate", icon: RAIL_ICONS.teleport, active: showTeleportPanel, onClick: () => togglePanel('teleport') },
 		{ id: 'packets', label: 'Packets', title: 'Live WebSocket wire log', icon: RAIL_ICONS.packets, active: showPacketPanel, onClick: () => { showPacketPanel = !showPacketPanel; } },
-		{ id: 'v2x', label: 'V2X messages', title: 'V2X message viewer (TENA feed)', icon: RAIL_ICONS.v2x, active: $v2xViewerOpen, onClick: toggleV2xViewer },
 		{ id: 'fleet', label: 'Fleet', title: 'V2X fleet: emergency vehicles and civilians that react to V2X messages', icon: RAIL_ICONS.fleet, active: showFleetPanel, onClick: () => togglePanel('fleet') },
 		{ id: 'scenarios', label: 'Scenarios', title: 'OpenSCENARIO (X)', icon: RAIL_ICONS.scenarios, active: showXoscPicker, onClick: () => { showXoscPicker = !showXoscPicker; showTeleportPanel = false; } },
 		{ id: 'map', label: mapMode === 'overlay' ? 'Map: floating' : 'Map: full panel', title: 'Toggle map: full panel / floating overlay', icon: RAIL_ICONS.map, active: mapMode === 'panel', onClick: toggleMapMode }
@@ -660,7 +658,6 @@
 			hudVisible = !hudVisible;
 			return;
 		}
-		if (e.key === 'Escape' && closeTopV2xWindow()) return; // the top V2X window closes first
 		if (e.key === 'Escape') {
 			if (showObjectPlacer) {
 				showObjectPlacer = false;
@@ -970,19 +967,6 @@
 						</button>
 					</div>
 
-					<!-- V2X message viewer button -->
-					<div class="mb-4">
-						<button onclick={toggleV2xViewer}
-							aria-pressed={$v2xViewerOpen}
-							class="w-full py-2.5 bg-gray-800/50 hover:bg-gray-800 border border-gray-700 hover:border-cyan-500/50 rounded-xl text-xs font-body tracking-wider text-gray-300 hover:text-cyan-300 transition-all duration-200 cursor-pointer flex items-center justify-center gap-2"
-							title="Live J2735 messages per vehicle from the VOICES (TENA) feed">
-							<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-								<path stroke-linecap="round" stroke-linejoin="round" d="M8.288 15.038a5.25 5.25 0 017.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 011.06 0z" />
-							</svg>
-							V2X MESSAGE VIEWER
-						</button>
-					</div>
-
 					<!-- Action button -->
 					<button onclick={handleQuickStart}
 						class="w-full py-3.5 bg-accent hover:bg-red-500 rounded-xl text-sm font-display font-bold tracking-widest uppercase text-white transition-all duration-200 shadow-[0_0_20px_rgba(220,38,38,0.3)] hover:shadow-[0_0_30px_rgba(220,38,38,0.5)] cursor-pointer">
@@ -1051,8 +1035,14 @@
 				     reverted to the pre-dashboard-overhaul look by user request. -->
 				{#if hudMode === 'classic'}
 					<HudOverlay telemetry={currentTelemetry} isRecording={true} />
+					<!-- the V2X perspective keeps its place on the left in the classic layout too -->
+					<div class="absolute bottom-4 left-4 z-20 max-h-[45vh] w-[300px] overflow-y-auto rounded-xl border border-white/10 bg-black/40 p-2 backdrop-blur-md">
+						<V2xPerspectivePanel />
+					</div>
 				{:else if hudVisible}
-					<DrivingHud telemetry={currentTelemetry} clientFps={$clientFps} {inputMode} {connected} />
+					<DrivingHud telemetry={currentTelemetry} clientFps={$clientFps} {inputMode} {connected}>
+						<V2xPerspectivePanel />
+					</DrivingHud>
 				{/if}
 
 				{#if hudMode === 'classic'}
@@ -1138,14 +1128,6 @@
 							: 'text-gray-300 hover:text-white hover:bg-white/5'}"
 						title="Live WebSocket wire log — every packet, verbatim">
 						Packets
-					</button>
-					<button onclick={toggleV2xViewer}
-						aria-pressed={$v2xViewerOpen}
-						class="px-3 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all duration-200 cursor-pointer {$v2xViewerOpen
-							? 'bg-cyan-600 text-white shadow-[0_0_8px_rgba(8,145,178,0.45)]'
-							: 'text-gray-300 hover:text-white hover:bg-white/5'}"
-						title="V2X message viewer — live J2735 messages per vehicle (TENA feed)">
-						V2X
 					</button>
 					<button onclick={() => { showFleetPanel = !showFleetPanel; showWeatherPanel = false; showTrafficPanel = false; showCameraPanel = false; showTrajectoryPanel = false; showTeleportPanel = false; }}
 						aria-pressed={showFleetPanel}
@@ -1442,7 +1424,6 @@
 	{/if}
 
 	<!-- V2X message viewer: floating vehicle list + per-vehicle message windows (any session state) -->
-	<V2xWindows />
 
 	{#if showZoneEditor}
 		<V2xZoneEditor onclose={() => { showZoneEditor = false; }} />
