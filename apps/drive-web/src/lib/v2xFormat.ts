@@ -15,14 +15,14 @@ export function formatRxTime(tRx: number): string {
 	return d.toLocaleTimeString([], { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
 }
 
-export function formatSpeed(mps: number | null | undefined): string {
+export function formatSpeed(mps: number | null | undefined, decimals = 1): string {
 	if (typeof mps !== 'number' || !Number.isFinite(mps)) return '–';
-	return `${(mps * 3.6).toFixed(1)} km/h`;
+	return `${(mps * 3.6).toFixed(decimals)} km/h`;
 }
 
-export function formatHeading(deg: number | null | undefined): string {
+export function formatHeading(deg: number | null | undefined, decimals = 1): string {
 	if (typeof deg !== 'number' || !Number.isFinite(deg)) return '–';
-	return `${deg.toFixed(1)}°`;
+	return `${deg.toFixed(decimals)}°`;
 }
 
 /**

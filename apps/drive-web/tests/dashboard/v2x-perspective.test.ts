@@ -147,8 +147,8 @@ describe('v2x perspective store', () => {
 		expect(formatDistance(99.6)).toBe('100 m');
 		expect(formatDistance(1250)).toBe('1.3 km');
 		expect(formatDistance(null)).toBe('–');
-		expect(txLine(null)).toBe('not transmitting');
-		expect(txLine(snapshot.vehicles[0].tx)).toBe('BSM 10 Hz · 43.2 km/h · 90.0°');
+		expect(txLine(null)).toBe('nothing');
+		expect(txLine(snapshot.vehicles[0].tx)).toBe('43 km/h · 90°');
 	});
 });
 
@@ -164,21 +164,21 @@ describe('V2xPerspectivePanel', () => {
 		await tick();
 		const rows = screen.getAllByTestId('v2x-vehicle');
 		expect(rows).toHaveLength(2);
-		expect(screen.getByText('V2X · 2 connected')).toBeTruthy();
+		expect(screen.getByText('V2X · 2 vehicles')).toBeTruthy();
 		expect(screen.getAllByTestId('v2x-vehicle-summary')[0].textContent).toContain('10 Hz · hears 1');
 		expect(screen.queryByTestId('v2x-vehicle-details')).toBeNull();
 
 		await fireEvent.click(screen.getAllByTestId('v2x-vehicle-toggle')[0]);
 		await tick();
 		const details = screen.getByTestId('v2x-vehicle-details');
-		expect(details.textContent).toContain('BSM 10 Hz · 43.2 km/h · 90.0°');
-		expect(details.textContent).toContain('id 11111110 · msg 7');
+		expect(screen.getByTestId('v2x-tx-line').textContent).toBe('43 km/h · 90°');
+		expect(details.textContent).not.toContain('11111110'); // the raw ids stay out of the panel
 		const heard = screen.getAllByTestId('v2x-rx-row');
 		expect(heard).toHaveLength(1);
 		expect(screen.getByTestId('v2x-rx-distance').textContent).toBe('100 m');
 		expect(heard[0].textContent).toContain('ahead');
 		expect(heard[0].textContent).toContain('PATH-BG-1');
-		expect(heard[0].textContent).toContain('28.8 km/h');
+		expect(heard[0].textContent).toContain('29 km/h');
 
 		// a new snapshot replaces the rows in place: same row, new distance
 		const moved = JSON.parse(JSON.stringify(snapshot)) as V2xPerspectiveMessage;
@@ -188,9 +188,10 @@ describe('V2xPerspectivePanel', () => {
 		expect(screen.getAllByTestId('v2x-rx-row')).toHaveLength(1);
 		expect(screen.getByTestId('v2x-rx-distance').textContent).toBe('42 m');
 
-		const radius = screen.getByTestId('v2x-radius') as HTMLInputElement;
-		await fireEvent.change(radius, { target: { value: '120' } });
-		expect(socket.sentJson().at(-1)).toEqual({ type: 'v2x_perspective_set', radius_m: 120 });
-		expect(get(v2xRadiusM)).toBe(120);
+		const radius = screen.getByTestId('v2x-radius') as HTMLSelectElement;
+		expect([...radius.options].map((o) => o.value)).toEqual(['50', '100', '200', '300', '500', '1000', '2000']);
+		await fireEvent.change(radius, { target: { value: '100' } });
+		expect(socket.sentJson().at(-1)).toEqual({ type: 'v2x_perspective_set', radius_m: 100 });
+		expect(get(v2xRadiusM)).toBe(100);
 	});
 });

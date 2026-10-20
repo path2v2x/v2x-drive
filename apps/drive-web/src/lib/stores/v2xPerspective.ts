@@ -13,13 +13,15 @@
 
 import { get, writable } from 'svelte/store';
 import { registerDisconnectHook, registerDriveMessageHandler, sendDriveMessage } from './driveSocket';
-import { formatHeading, formatSpeed } from '$lib/v2xFormat';
+import { formatHeading, formatSpeed, lightsLabel } from '$lib/v2xFormat';
 import type { DriveMessage, V2xPerspectiveMessage, V2xPerspectiveTx } from '$lib/types';
 
 export const DEFAULT_RADIUS_M = 300;
 export const MIN_RADIUS_M = 10;
 export const MAX_RADIUS_M = 5000;
 export const INTERVAL_MS = 500;
+/** Range choices offered in the panel (metres); DSRC reaches a few hundred metres. */
+export const RADIUS_PRESETS = [50, 100, 200, 300, 500, 1000, 2000];
 const RADIUS_STORAGE_KEY = 'v2x-drive:v2x-radius';
 
 export function clampRadius(value: number): number {
@@ -111,11 +113,15 @@ export function formatDistance(meters: number | null | undefined): string {
 	return `${Math.round(meters)} m`;
 }
 
-/** One line for what a vehicle transmits: rate, speed and heading from its own BSM. */
+/** One plain line for what a vehicle transmits: speed and heading from its own BSM, plus the
+ * siren and lights when they are in use. */
 export function txLine(tx: V2xPerspectiveTx | null | undefined): string {
-	if (!tx) return 'not transmitting';
-	const parts = [`${tx.msg_type} ${Number(tx.rate_hz ?? 0).toFixed(0)} Hz`];
-	if (tx.summary) parts.push(formatSpeed(tx.summary.speed_mps), formatHeading(tx.summary.heading_deg));
+	if (!tx) return 'nothing';
+	if (!tx.summary) return `${tx.msg_type} (not decoded)`;
+	const parts = [formatSpeed(tx.summary.speed_mps, 0), formatHeading(tx.summary.heading_deg, 0)];
+	const lights = lightsLabel(tx.summary);
+	if (lights && lights !== 'off') parts.push(lights);
+	if (tx.summary.brakes) parts.push('braking');
 	return parts.join(' · ');
 }
 
