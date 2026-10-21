@@ -337,7 +337,7 @@
 	</div>
 
 	<!-- left column: camera + details -->
-	<aside class="absolute inset-y-0 left-0 z-20 flex w-[300px] flex-col overflow-y-auto bg-black/40 px-3 py-2 backdrop-blur-[2px]" data-testid="editor-left">
+	<aside class="absolute inset-y-0 left-0 z-20 flex w-[300px] max-w-[46vw] flex-col overflow-y-auto bg-black/40 px-3 py-2 backdrop-blur-[2px]" data-testid="editor-left">
 		<div class="pb-1 text-[10px] uppercase tracking-widest text-gray-500">Camera</div>
 		<div class="flex justify-between"><span class="text-gray-400">Position:</span><span data-testid="editor-pos">({fmt(pose?.x)}, {fmt(pose?.y)}, {fmt(pose?.z)})</span></div>
 		<div class="flex justify-between"><span class="text-gray-400">Yaw / pitch:</span><span>{fmt(pose?.yaw)}° / {fmt(pose?.pitch)}°</span></div>
@@ -394,14 +394,46 @@
 		{#if note}
 			<div class="mt-2 truncate text-[11px] text-amber-300" role="status">{note}</div>
 		{/if}
-		<div class="mt-3 border-t border-white/10 pt-2">
-			<V2xPerspectivePanel />
+
+		<!-- options at the bottom of the left column, like the driving view -->
+		<div class="mt-auto pt-3">
+			{#if $bgTraffic?.available}
+				<div class="border-t border-white/10 pt-2" data-testid="editor-bg-traffic">
+					<div class="pb-1 text-[10px] uppercase tracking-widest text-gray-500">Background traffic</div>
+					<div class="flex items-center gap-2">
+						<span class="inline-block h-1.5 w-1.5 shrink-0 rounded-full {bgDot}"></span>
+						<span class="truncate text-gray-200" title={$bgTraffic.label} data-testid="editor-bg-state">{bgStatusText}</span>
+						<button
+							type="button"
+							onclick={toggleBgTraffic}
+							disabled={bgBusy}
+							class="ml-auto shrink-0 cursor-pointer rounded bg-white/10 px-2 py-0.5 text-white hover:bg-white/20 disabled:cursor-default disabled:opacity-50"
+							data-testid="editor-bg-toggle"
+						>
+							{bgState === 'running' || bgState === 'stopping' ? 'Stop' : 'Start'}
+						</button>
+					</div>
+					{#if $bgTraffic.last_line}
+						<div class="truncate pt-0.5 text-[10px] text-gray-500" title={$bgTraffic.last_line}>{$bgTraffic.last_line}</div>
+					{/if}
+					{#if bgNote}<div class="pt-0.5 text-[10px] text-amber-300">{bgNote}</div>{/if}
+				</div>
+			{/if}
+			<div class="mt-2 border-t border-white/10 pt-2">
+				<div class="pb-1 text-[10px] uppercase tracking-widest text-gray-500">Session</div>
+				<button type="button" onclick={switchToDriving} class="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-[3px] text-left text-gray-200 hover:bg-white/10 hover:text-white" data-testid="editor-switch-driving">
+					<span class="inline-block h-1.5 w-1.5 rounded-full bg-gray-500"></span>Switch to driving here
+				</button>
+				<button type="button" onclick={handleEnd} class="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-[3px] text-left text-red-300 hover:bg-white/10 hover:text-white" data-testid="editor-end">
+					<span class="inline-block h-1.5 w-1.5 rounded-full bg-red-400"></span>End editor
+				</button>
+			</div>
+			<div class="pt-3 text-[10px] text-gray-500">read-only: the editor never moves or deletes anything but its camera</div>
 		</div>
-		<div class="mt-auto pt-3 text-[10px] text-gray-500">read-only: the editor never moves or deletes anything but its camera</div>
 	</aside>
 
 	<!-- right column: outliner -->
-	<aside class="absolute inset-y-0 right-0 z-20 flex w-[300px] flex-col bg-black/40 px-2 py-2 backdrop-blur-[2px]" data-testid="editor-outliner">
+	<aside class="absolute inset-y-0 right-0 z-20 flex w-[300px] max-w-[46vw] flex-col bg-black/40 px-2 py-2 backdrop-blur-[2px]" data-testid="editor-outliner">
 		<div class="flex items-center justify-between px-2 pb-1">
 			<span class="text-[10px] uppercase tracking-widest text-gray-500">Outliner · {$worldActorsInfo.total}{$worldActorsInfo.truncated ? '+' : ''}</span>
 			<button type="button" onclick={() => requestWorldActors()} class="cursor-pointer text-[10px] text-gray-400 hover:text-white">refresh</button>
@@ -437,36 +469,9 @@
 				<div class="px-2 py-4 text-gray-500">{$worldActors.length ? 'nothing matches the filter' : 'no actors listed yet'}</div>
 			{/each}
 		</div>
-		{#if $bgTraffic?.available}
-			<div class="mt-2 border-t border-white/10 px-2 pt-2" data-testid="editor-bg-traffic">
-				<div class="pb-1 text-[10px] uppercase tracking-widest text-gray-500">Background traffic</div>
-				<div class="flex items-center gap-2">
-					<span class="inline-block h-1.5 w-1.5 shrink-0 rounded-full {bgDot}"></span>
-					<span class="truncate text-gray-200" title={$bgTraffic.label} data-testid="editor-bg-state">{bgStatusText}</span>
-					<button
-						type="button"
-						onclick={toggleBgTraffic}
-						disabled={bgBusy}
-						class="ml-auto shrink-0 cursor-pointer rounded bg-white/10 px-2 py-0.5 text-white hover:bg-white/20 disabled:cursor-default disabled:opacity-50"
-						data-testid="editor-bg-toggle"
-					>
-						{bgState === 'running' || bgState === 'stopping' ? 'Stop' : 'Start'}
-					</button>
-				</div>
-				{#if $bgTraffic.last_line}
-					<div class="truncate pt-0.5 text-[10px] text-gray-500" title={$bgTraffic.last_line}>{$bgTraffic.last_line}</div>
-				{/if}
-				{#if bgNote}<div class="pt-0.5 text-[10px] text-amber-300">{bgNote}</div>{/if}
-			</div>
-		{/if}
-		<div class="mt-2 border-t border-white/10 px-2 pt-2">
-			<div class="pb-1 text-[10px] uppercase tracking-widest text-gray-500">Session</div>
-			<button type="button" onclick={switchToDriving} class="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-[3px] text-left text-gray-200 hover:bg-white/10 hover:text-white" data-testid="editor-switch-driving">
-				<span class="inline-block h-1.5 w-1.5 rounded-full bg-gray-500"></span>Switch to driving here
-			</button>
-			<button type="button" onclick={handleEnd} class="flex w-full cursor-pointer items-center gap-2 rounded px-2 py-[3px] text-left text-red-300 hover:bg-white/10 hover:text-white" data-testid="editor-end">
-				<span class="inline-block h-1.5 w-1.5 rounded-full bg-red-400"></span>End editor
-			</button>
+		<!-- the V2X perspective under the outliner, like the right column of the driving view -->
+		<div class="mt-2 max-h-[45%] shrink-0 overflow-y-auto border-t border-white/10 px-2 pt-2" data-testid="editor-v2x">
+			<V2xPerspectivePanel />
 		</div>
 	</aside>
 </div>

@@ -72,8 +72,11 @@ def distance_and_bearing(from_pos, from_yaw, to_pos) -> Tuple[Optional[float], O
     return round(dist, 1), round(bearing, 1), (round(rel, 1) if rel is not None else None)
 
 
-def tx_payload(entry, latest, decoded, now: float) -> Optional[dict]:
-    """What a vehicle transmits: its latest frame as the receiver would see it, or None."""
+def tx_payload(entry, latest, decoded, now: float, full: bool = False) -> Optional[dict]:
+    """What a vehicle transmits: its latest frame as the receiver would see it, or None.
+
+    ``full`` adds the whole decoded J2735 body under ``decoded`` (the panel's full view).
+    """
     if latest is None:
         return None
     raw, t_rx = latest
@@ -81,7 +84,7 @@ def tx_payload(entry, latest, decoded, now: float) -> Optional[dict]:
     msg_type = "BSM"
     if decoded is not None and getattr(decoded, "msg_type", "unknown") != "unknown":
         msg_type = decoded.msg_type
-    return {
+    out = {
         "msg_type": msg_type,
         "t_rx": round(float(t_rx), 3),
         "age_s": round(max(0.0, now - float(t_rx)), 2),
@@ -92,10 +95,14 @@ def tx_payload(entry, latest, decoded, now: float) -> Optional[dict]:
         "summary": getattr(decoded, "summary", None) if decoded is not None else None,
         "error": getattr(decoded, "error", None) if decoded is not None else None,
     }
+    if full:
+        out["decoded"] = getattr(decoded, "decoded", None) if decoded is not None else None
+    return out
 
 
 def build_perspective(entries: Iterable, latest_by_key: Dict[str, tuple], decoded_by_key: Dict[str, object],
-                      radius_m: float, now: float, interval_s: float = DEFAULT_INTERVAL_S) -> dict:
+                      radius_m: float, now: float, interval_s: float = DEFAULT_INTERVAL_S,
+                      full: bool = False) -> dict:
     """The snapshot message for the client.
 
     ``entries`` are the registry's listed vehicles (VehicleEntry), ``latest_by_key`` the hub's
@@ -107,7 +114,7 @@ def build_perspective(entries: Iterable, latest_by_key: Dict[str, tuple], decode
     transmitting = {e.key: e for e in placed if latest_by_key.get(e.key)}
     vehicles = []
     for entry in placed:
-        tx = tx_payload(entry, latest_by_key.get(entry.key), decoded_by_key.get(entry.key), now)
+        tx = tx_payload(entry, latest_by_key.get(entry.key), decoded_by_key.get(entry.key), now, full)
         heard = []
         for other in transmitting.values():
             if other.key == entry.key:
@@ -115,8 +122,8 @@ def build_perspective(entries: Iterable, latest_by_key: Dict[str, tuple], decode
             dist, bearing, rel = distance_and_bearing(entry.pos, entry.yaw, other.pos)
             if dist is None or dist > radius_m:
                 continue
-            other_tx = tx_payload(other, latest_by_key.get(other.key), decoded_by_key.get(other.key), now) or {}
-            heard.append({
+            other_tx = tx_payload(other, latest_by_key.get(other.key), decoded_by_key.get(other.key), now, full) or {}
+            row = {
                 "key": other.key,
                 "name": other.role or other.key,
                 "actor_id": other.actor_id,
@@ -131,7 +138,10 @@ def build_perspective(entries: Iterable, latest_by_key: Dict[str, tuple], decode
                 "rate_hz": other_tx.get("rate_hz", 0.0),
                 "source": other_tx.get("source", "none"),
                 "summary": other_tx.get("summary"),
-            })
+            }
+            if full:
+                row["decoded"] = other_tx.get("decoded")
+            heard.append(row)
         heard.sort(key=lambda r: (r["distance_m"], r["key"]))
         vehicles.append({
             "key": entry.key,
@@ -154,6 +164,7 @@ def build_perspective(entries: Iterable, latest_by_key: Dict[str, tuple], decode
         "ts": round(now, 3),
         "radius_m": float(radius_m),
         "interval_ms": int(round(interval_s * 1000)),
+        "detail": "full" if full else "simple",
         "vehicles": vehicles,
         "count": len(vehicles),
         "transmitting": len(transmitting),

@@ -83,6 +83,12 @@ def test_build_perspective_filters_by_radius_and_never_hears_itself():
     tight = build_perspective([a, b, c, d], latest, decoded, radius_m=10.0, now=now)
     assert all(v["rx"] == [] for v in tight["vehicles"])
 
+    # the full view carries the whole decoded body on what is sent and what is heard
+    assert snap["detail"] == "simple" and "decoded" not in m1["tx"] and "decoded" not in heard
+    full = build_perspective([a, b, c, d], latest, decoded, radius_m=300.0, now=now, full=True)
+    fm1 = {v["key"]: v for v in full["vehicles"]}["PATH-M-1"]
+    assert full["detail"] == "full" and fm1["tx"]["decoded"] == {} and fm1["rx"][0]["decoded"] == {}
+
 
 def test_vehicles_without_a_position_are_left_out():
     lost = VehicleEntry(key="PATH-BG-3", actor_id=None, role="PATH-BG-3", type_id="", kind="voices", pos=None,
@@ -161,4 +167,9 @@ async def test_radius_defaults_and_bad_values(live_ctx, mock_websocket):
     assert reply["radius_m"] == DEFAULT_RADIUS_M  # unchanged on garbage
     reply = await conn.handle({"type": "v2x_perspective_set", "radius_m": 20000})
     assert reply["radius_m"] == MAX_RADIUS_M
+    assert reply["detail"] == "simple" and "decoded" not in reply["vehicles"][0]["tx"]
+    reply = await conn.handle({"type": "v2x_perspective_set", "detail": "full"})
+    assert reply["detail"] == "full" and reply["vehicles"][0]["tx"]["decoded"] == {"messageId": 20}
+    reply = await conn.handle({"type": "v2x_perspective_set", "detail": "simple"})
+    assert reply["detail"] == "simple"
     conn.close()

@@ -17,8 +17,8 @@ Protocol (JSON over the drive WebSocket; replies are returned by
 
 Per-vehicle perspective (what each connected vehicle sends and hears, see v2x_perspective.py):
 
-  -> {"type": "v2x_perspective_subscribe", "radius_m": 300, "interval_ms": 500}
-  -> {"type": "v2x_perspective_set", "radius_m": 150}
+  -> {"type": "v2x_perspective_subscribe", "radius_m": 300, "interval_ms": 500, "detail": "simple"|"full"}
+  -> {"type": "v2x_perspective_set", "radius_m": 150, "detail": "full"}   (full adds the decoded J2735 body)
   <- {"type": "v2x_perspective", "active": true, "radius_m": 300, "interval_ms": 500, "vehicles": [...]}
      (the reply, and then pushed every interval while subscribed)
   -> {"type": "v2x_perspective_unsubscribe"}
@@ -116,6 +116,7 @@ class V2xViewerConn:
         # per-vehicle perspective: None until the client subscribes
         self.persp_radius_m: Optional[float] = None
         self.persp_interval_s = DEFAULT_INTERVAL_S
+        self.persp_full = False
         self._persp_last = 0.0
 
     async def perspective_snapshot(self) -> dict:
@@ -137,7 +138,8 @@ class V2xViewerConn:
             except Exception as exc:
                 logger.debug("perspective decode failed: %s", exc)
         radius = self.persp_radius_m if self.persp_radius_m is not None else DEFAULT_RADIUS_M
-        return build_perspective(entries, latest, decoded_by_key, radius, time.time(), self.persp_interval_s)
+        return build_perspective(entries, latest, decoded_by_key, radius, time.time(), self.persp_interval_s,
+                                 full=self.persp_full)
 
     # ── request/reply ──
 
@@ -180,6 +182,8 @@ class V2xViewerConn:
                     self.persp_interval_s = clamp_interval(float(msg["interval_ms"]) / 1000.0, self.persp_interval_s)
                 except (TypeError, ValueError):
                     pass
+            if "detail" in msg:
+                self.persp_full = str(msg.get("detail")) == "full"
             self.lease_until = time.time() + WATCH_LEASE_S
             self._persp_last = time.time()
             return await self.perspective_snapshot()

@@ -19,7 +19,7 @@
 		clientFps?: number;
 		inputMode?: 'keyboard' | 'wheel';
 		connected?: boolean;
-		/** Interactive block docked under the telemetry (the V2X perspective). */
+		/** Interactive block under the telemetry (the controls); it sits at the bottom of the column and scrolls when short of room. */
 		children?: Snippet;
 	}
 
@@ -109,7 +109,7 @@
 	{/each}
 
 	{#if children}
-		<div class="mt-2 min-h-0 flex-1 overflow-y-auto border-t border-white/10 pt-2 pointer-events-auto select-text" data-testid="hud-dock">
+		<div class="mt-2 flex min-h-0 flex-1 flex-col overflow-y-auto pointer-events-auto select-text" data-testid="hud-dock">
 			{@render children()}
 		</div>
 	{/if}

@@ -89,8 +89,8 @@ CARLA `Special1` light state, Ctrl+L in the DT manual control) and
 | `v2x_list_vehicles` | `v2x_vehicle_list {version, ts, feed, vehicles[]}`; also pushed whenever the table changes while the client watches (list requested in the last 60 s or any subscription) |
 | `v2x_subscribe {keys[], detail: compact\|full}` | `v2x_subscribed {keys[], detail, unknown[]}` |
 | `v2x_unsubscribe {keys[]}` (no keys = all) | `v2x_subscribed {keys[]}` |
-| `v2x_perspective_subscribe {radius_m?, interval_ms?}` | `v2x_perspective {active, radius_m, interval_ms, count, transmitting, vehicles[{key, name, kind, subkind, org, emergency, pos, yaw, speed_mps, tx{msg_type, t_rx, age_s, rate_hz, count, source, size, summary}, rx[{key, name, kind, org, emergency, distance_m, bearing_deg, rel_bearing_deg, msg_type, age_s, rate_hz, source, summary}], rx_count}]}` (the reply, then pushed every `interval_ms`) |
-| `v2x_perspective_set {radius_m}` | `v2x_perspective` |
+| `v2x_perspective_subscribe {radius_m?, interval_ms?, detail?: simple\|full}` | `v2x_perspective {active, radius_m, interval_ms, count, transmitting, vehicles[{key, name, kind, subkind, org, emergency, pos, yaw, speed_mps, tx{msg_type, t_rx, age_s, rate_hz, count, source, size, summary}, rx[{key, name, kind, org, emergency, distance_m, bearing_deg, rel_bearing_deg, msg_type, age_s, rate_hz, source, summary}], rx_count}]}` (the reply, then pushed every `interval_ms`) |
+| `v2x_perspective_set {radius_m?, detail?}` | `v2x_perspective` (`detail: full` adds `decoded`, the whole J2735 body, to `tx` and each `rx`) |
 | `v2x_perspective_unsubscribe` | `v2x_perspective {active: false}` |
 | `v2x_decode {raw_hex}` | `v2x_decoded {raw_hex, msg_type, decoded, summary, error}` |
 | | `v2x_messages {dropped, batch[]}` pushed at most 10 times a second, ≤ 400 rows |
@@ -119,8 +119,8 @@ from `~/.dt_scenario_config` → `scenario_files/<VUG_SCENARIO_FILE>`),
 
 ## The vehicle perspective (what the page shows)
 
-The left column of `/drive` (under the HUD) and of `/editor` (under the details)
-carries a permanent "V2X" block: one row per connected vehicle, that is every
+The right column of `/drive` and the lower part of the right column of `/editor`
+(under the outliner) carry a permanent "V2X" block: one row per connected vehicle, that is every
 vehicle with a real feed on TENA (our scenario cars, the browser ego when it
 publishes, the other sites' ghosts). A row expands into two blocks that update
 in place, never as a log:
@@ -132,7 +132,12 @@ in place, never as a log:
   where the sender sits relative to the vehicle's heading (ahead, behind, left,
   right) and the sender's speed. A vehicle never hears itself.
 
-The radius (default 300 m, 10 to 5000 m, remembered per browser) stands in for
+The block has two views: *simple* (speed, heading, distances) and *full*, which
+adds every decoded BSM field and the raw J2735 body for what the vehicle sends and,
+per heard sender on click, for what it hears. The choice is remembered per browser
+and changes what the server includes (`detail` in the protocol).
+
+The range (default 300 m, chosen from a list, remembered per browser) stands in for
 radio range: TENA delivers every message everywhere, so the cut is applied on the
 receiving side, like a real onboard unit that only hears what is in range. The
 distance is measured between the CARLA actors (for ghosts that is the position the

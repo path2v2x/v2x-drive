@@ -1,7 +1,6 @@
 <script lang="ts">
-	// The control bar of the driving view: a translucent column on the right, in the
-	// same style as the HUD column on the left, with every button named and grouped
-	// (panels, camera views, session actions).
+	// The controls of the driving view: every button named and grouped (panels, camera
+	// views, session actions), rendered as a block at the bottom of the HUD column.
 	import type { RailItem } from '$lib/types';
 
 	export interface ControlSection {
@@ -33,11 +32,7 @@
 	}
 </script>
 
-<aside
-	class="absolute inset-y-0 right-0 z-20 flex w-[172px] flex-col overflow-y-auto bg-black/40 px-2 py-2 font-mono text-[12px] leading-[18px] text-gray-100 backdrop-blur-[2px] pointer-events-auto"
-	data-testid="control-bar"
-	aria-label="Controls"
->
+<nav class="mt-auto flex flex-col border-t border-white/10 pt-1" data-testid="control-bar" aria-label="Controls">
 	{#each sections as section (section.title)}
 		<div class="px-2 pb-0.5 pt-2 text-[10px] uppercase tracking-widest text-gray-500">{section.title}</div>
 		{#each section.items as item (item.id)}
@@ -65,6 +60,6 @@
 		{/if}
 	{/each}
 	{#if footer}
-		<div class="mt-auto px-2 pt-3 text-[10px] text-gray-500" data-testid="control-footer">{footer}</div>
+		<div class="px-2 pt-3 text-[10px] text-gray-500" data-testid="control-footer">{footer}</div>
 	{/if}
-</aside>
+</nav>

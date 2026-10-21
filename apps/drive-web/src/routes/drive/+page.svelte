@@ -159,7 +159,7 @@
 		}
 	});
 	let hudWidth = $derived(hudMode === 'pygame' && hudVisible ? '300px' : '0px');
-	let railWidth = $derived(hudMode === 'pygame' ? '172px' : '0px');
+	let railWidth = $derived(hudMode === 'pygame' && hudVisible ? '300px' : '0px');
 	// Coming back from the editor: start the next drive near its camera (?x=&y=&yaw=).
 	let pendingSpawn = $state<{ x: number; y: number; yaw?: number } | null>(null);
 	let showXoscPicker = $state(false);
@@ -1041,7 +1041,7 @@
 					</div>
 				{:else if hudVisible}
 					<DrivingHud telemetry={currentTelemetry} clientFps={$clientFps} {inputMode} {connected}>
-						<V2xPerspectivePanel />
+						<ControlBar sections={controlSections} />
 					</DrivingHud>
 				{/if}
 
@@ -1170,11 +1170,19 @@
 					</button>
 				</div>
 
-				{:else}
-					<ControlBar sections={controlSections} footer="Tab: next camera · H: hide the HUD" />
+				{:else if hudVisible}
+					<!-- right column: the V2X perspective, in the same style as the HUD column -->
+					<aside
+						class="absolute inset-y-0 right-0 z-20 flex w-[300px] max-w-[46vw] flex-col overflow-y-auto bg-black/40 px-3 py-2 font-mono text-[12px] leading-[18px] text-gray-100 backdrop-blur-[2px] pointer-events-auto"
+						data-testid="v2x-sidebar"
+						aria-label="V2X"
+					>
+						<V2xPerspectivePanel />
+						<div class="mt-auto pt-3 text-[10px] text-gray-500">Tab: next camera · H: hide the sidebars</div>
+					</aside>
 				{/if}
 
-				<!-- Overlays and panels live between the HUD column (--hud-w) and the control bar (--rail-w) -->
+				<!-- Overlays and panels live between the HUD column (--hud-w) and the V2X column (--rail-w) -->
 				<div class="absolute inset-y-0 pointer-events-none [&>*]:pointer-events-auto" style="left: var(--hud-w, 0px); right: var(--rail-w, 0px)">
 				{#if mapMode === 'overlay' && mapData}
 					<DriveMiniMap

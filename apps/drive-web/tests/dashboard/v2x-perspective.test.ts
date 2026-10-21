@@ -9,11 +9,15 @@ import {
 	formatDistance,
 	relBearingLabel,
 	resetV2xPerspective,
+	setV2xDetail,
 	setV2xRadius,
+	summaryFields,
+	jsonPretty,
 	subscribeV2xPerspective,
 	toggleV2xExpanded,
 	txLine,
 	unsubscribeV2xPerspective,
+	v2xDetail,
 	v2xExpanded,
 	v2xPerspective,
 	v2xPerspectiveActive,
@@ -96,6 +100,7 @@ beforeEach(() => {
 	vi.stubGlobal('WebSocket', MockWebSocket);
 	resetV2xPerspective();
 	v2xRadiusM.set(DEFAULT_RADIUS_M);
+	v2xDetail.set('simple');
 });
 
 afterEach(() => {
@@ -108,7 +113,7 @@ describe('v2x perspective store', () => {
 	it('subscribes with the radius, keeps the snapshot and clears it on unsubscribe or disconnect', () => {
 		const socket = startSocket();
 		subscribeV2xPerspective();
-		expect(socket.sentJson().at(-1)).toEqual({ type: 'v2x_perspective_subscribe', radius_m: 300, interval_ms: 500 });
+		expect(socket.sentJson().at(-1)).toEqual({ type: 'v2x_perspective_subscribe', radius_m: 300, interval_ms: 500, detail: 'simple' });
 
 		socket.receive(snapshot);
 		expect(get(v2xPerspectiveActive)).toBe(true);
@@ -119,6 +124,12 @@ describe('v2x perspective store', () => {
 		expect(socket.sentJson().at(-1)).toEqual({ type: 'v2x_perspective_set', radius_m: 150 });
 		setV2xRadius(1);
 		expect(get(v2xRadiusM)).toBe(10);
+
+		setV2xDetail('full');
+		expect(socket.sentJson().at(-1)).toEqual({ type: 'v2x_perspective_set', detail: 'full' });
+		socket.receive({ ...snapshot, detail: 'full' });
+		expect(get(v2xDetail)).toBe('full');
+		setV2xDetail('simple');
 
 		toggleV2xExpanded('PATH-M-1');
 		expect(get(v2xExpanded).has('PATH-M-1')).toBe(true);
@@ -149,6 +160,23 @@ describe('v2x perspective store', () => {
 		expect(formatDistance(null)).toBe('–');
 		expect(txLine(null)).toBe('nothing');
 		expect(txLine(snapshot.vehicles[0].tx)).toBe('43 km/h · 90°');
+	});
+
+	it('lists every BSM field for the full view', () => {
+		const rows = summaryFields(snapshot.vehicles[0].tx!);
+		const byLabel = Object.fromEntries(rows);
+		expect(byLabel.message).toBe('BSM · 52 B');
+		expect(byLabel.rate).toBe('10.0 Hz');
+		expect(byLabel.id).toBe('11111110');
+		expect(byLabel.msgCnt).toBe('7');
+		expect(byLabel.secMark).toBe('12000 ms');
+		expect(byLabel.coords).toBe('origin-relative');
+		expect(byLabel.speed).toBe('43.2 km/h');
+		expect(byLabel.brakes).toBe('no');
+		expect(rows.map(([k]) => k)).not.toContain('siren'); // no Part II: no light rows
+		expect(jsonPretty({ coreData: { msgCnt: 7 } })).toBe('{\n "coreData": {\n  "msgCnt": 7\n }\n}');
+		expect(jsonPretty(null)).toBe('');
+		expect(jsonPretty({ a: 'x'.repeat(50) }, 20).endsWith('…')).toBe(true);
 	});
 });
 
@@ -187,6 +215,26 @@ describe('V2xPerspectivePanel', () => {
 		await tick();
 		expect(screen.getAllByTestId('v2x-rx-row')).toHaveLength(1);
 		expect(screen.getByTestId('v2x-rx-distance').textContent).toBe('42 m');
+
+		// the full view adds the field table and the raw body, per sender on click
+		await fireEvent.click(screen.getByTestId('v2x-detail'));
+		expect(socket.sentJson().at(-1)).toEqual({ type: 'v2x_perspective_set', detail: 'full' });
+		const fullSnap = JSON.parse(JSON.stringify(moved)) as V2xPerspectiveMessage;
+		fullSnap.detail = 'full';
+		fullSnap.vehicles[0].tx!.decoded = { coreData: { msgCnt: 7 } };
+		fullSnap.vehicles[0].rx[0].decoded = { coreData: { msgCnt: 3 } };
+		socket.receive(fullSnap);
+		await tick();
+		expect(screen.getAllByTestId('v2x-fields')).toHaveLength(1);
+		expect(screen.getByTestId('v2x-raw').textContent).toContain('"msgCnt": 7');
+		await fireEvent.click(screen.getAllByTestId('v2x-rx-row')[0]);
+		await tick();
+		expect(screen.getAllByTestId('v2x-fields')).toHaveLength(2);
+		expect(screen.getAllByTestId('v2x-raw')[1].textContent).toContain('"msgCnt": 3');
+		await fireEvent.click(screen.getByTestId('v2x-detail'));
+		socket.receive(moved);
+		await tick();
+		expect(screen.queryByTestId('v2x-fields')).toBeNull();
 
 		const radius = screen.getByTestId('v2x-radius') as HTMLSelectElement;
 		expect([...radius.options].map((o) => o.value)).toEqual(['50', '100', '200', '300', '500', '1000', '2000']);

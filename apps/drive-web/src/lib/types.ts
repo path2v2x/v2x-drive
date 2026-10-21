@@ -669,6 +669,8 @@ export interface V2xPerspectiveTx {
 	size: number;
 	summary: V2xBsmSummary | null;
 	error: string | null;
+	/** the whole decoded J2735 body, only in the full view */
+	decoded?: Record<string, unknown> | null;
 }
 
 /** One sender a vehicle hears inside its reception radius. */
@@ -687,6 +689,7 @@ export interface V2xPerspectiveRx {
 	rate_hz: number;
 	source: V2xFeedSource;
 	summary: V2xBsmSummary | null;
+	decoded?: Record<string, unknown> | null;
 }
 
 export interface V2xPerspectiveVehicle {
@@ -712,6 +715,7 @@ export interface V2xPerspectiveMessage extends DriveMessage {
 	ts?: number;
 	radius_m: number | null;
 	interval_ms?: number;
+	detail?: 'simple' | 'full';
 	vehicles: V2xPerspectiveVehicle[];
 	count: number;
 	transmitting?: number;
