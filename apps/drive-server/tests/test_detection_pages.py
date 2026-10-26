@@ -4,6 +4,7 @@ import pytest
 
 from digital_twin_bridge.detection_pages import (
     DetectionPaginationError,
+    DetectionPaginationLimitExceeded,
     fetch_all_detection_pages,
 )
 
@@ -50,3 +51,18 @@ def test_fetch_all_detection_pages_enforces_item_bound():
 
     with pytest.raises(DetectionPaginationError, match="exceeded 1 items"):
         fetch_all_detection_pages(fetch, "start", "end", max_items=1)
+
+
+def test_fetch_all_detection_pages_bounds_raise_limit_exceeded():
+    def endless(start, end, limit, *, next_token=None):
+        return {"items": [], "next": f"after-{next_token}"}
+
+    with pytest.raises(DetectionPaginationLimitExceeded, match="exceeded 3 pages"):
+        fetch_all_detection_pages(endless, "start", "end", max_pages=3)
+
+    def oversized(start, end, limit, *, next_token=None):
+        return {"items": [{"id": 1}, {"id": 2}], "next": None}
+
+    with pytest.raises(DetectionPaginationLimitExceeded, match="exceeded 1 items"):
+        fetch_all_detection_pages(oversized, "start", "end", max_items=1)
+    assert issubclass(DetectionPaginationLimitExceeded, DetectionPaginationError)

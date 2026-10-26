@@ -17,13 +17,15 @@ import threading
 import weakref
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 import numpy as np
 import websockets
 from PIL import Image
 
-from digital_twin_bridge.scene_reconstructor import SceneReconstructor
+from digital_twin_bridge.detection_pages import DetectionPaginationLimitExceeded
+from digital_twin_bridge.scene_reconstructor import ReconstructionResult, SceneReconstructor
 from digital_twin_bridge.openscenario_runner import list_xosc
 from digital_twin_bridge.trajectory_player import (
     TrajectoryPlayer,
@@ -58,6 +60,10 @@ SCENE_FETCH_MAX_CONCURRENT = 2
 DEFAULT_SCENE_FETCH_TIMEOUT_SECONDS = 20.0
 DEFAULT_SCENE_FETCH_MAX_PAGES = 20
 DEFAULT_SCENE_FETCH_MAX_ITEMS = 10_000
+# A range with more detections than these bounds is retried with its most
+# recent half (the end stays fixed) until it fits.  Below this length the
+# session starts without the reconstructed scene instead of failing.
+SCENE_FETCH_MIN_WINDOW_SECONDS = 60.0
 _scene_fetch_limiters = weakref.WeakKeyDictionary()
 
 
@@ -68,6 +74,25 @@ def _scene_fetch_limiter() -> asyncio.Semaphore:
         limiter = asyncio.Semaphore(SCENE_FETCH_MAX_CONCURRENT)
         _scene_fetch_limiters[loop] = limiter
     return limiter
+
+
+def _parse_iso_utc(value) -> Optional[datetime]:
+    """An ISO-8601 time from the client (``Z`` suffix allowed) as aware UTC, or None."""
+    text = str(value or "").strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_iso_utc(value: datetime) -> str:
+    """Format like JavaScript's ``toISOString`` (milliseconds, ``Z``)."""
+    return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 # Default vehicle if none specified
 DEFAULT_VEHICLE = "vehicle.tesla.model3"
@@ -608,18 +633,22 @@ class DriveSession:
         self._trajectory_player = trajectory_player
         self._openscenario_runner = openscenario_runner
 
-    async def _fetch_scene_result(self, start: str, end: str):
-        """Fetch historical pages off-loop without permitting CARLA mutation."""
+    async def _fetch_scene_result(self, start: str, end: str, timeout: Optional[float] = None):
+        """Fetch historical pages off-loop without permitting CARLA mutation.
+
+        ``timeout`` is what is left of the scene-fetch budget (default: all
+        of it), so the retries in _fetch_scene_with_fallback share one deadline.
+        """
         if self._reconstructor is None:
             raise RuntimeError("scene reconstructor is not initialized")
 
+        budget = (self._scene_fetch_timeout_seconds if timeout is None
+                  else max(0.0, float(timeout)))
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._scene_fetch_timeout_seconds
+        deadline = loop.time() + budget
         limiter = _scene_fetch_limiter()
         try:
-            await asyncio.wait_for(
-                limiter.acquire(), timeout=self._scene_fetch_timeout_seconds
-            )
+            await asyncio.wait_for(limiter.acquire(), timeout=budget)
         except asyncio.TimeoutError as exc:
             raise RuntimeError(
                 "Historical scene fetch timed out after "
@@ -676,6 +705,47 @@ class DriveSession:
             if not release_when_done:
                 limiter.release()
 
+    async def _fetch_scene_with_fallback(self, start: str, end: str):
+        """Fetch the scene, narrowing a range that is too busy for the page bounds.
+
+        The roadside cameras log about ten detections a second per tracked
+        object, so a busy hour holds more than ``max_pages``/``max_items``
+        allow.  Each overflow retries with the most recent half of the range
+        (``end`` stays fixed).  Once that half would be shorter than
+        SCENE_FETCH_MIN_WINDOW_SECONDS, the session starts without a
+        reconstructed scene.  Timeouts and malformed pages still fail the start,
+        and all attempts share the one scene-fetch timeout.
+
+        Returns ``(result, scene_start)``: the start of the range actually
+        rebuilt, or None when the scene was skipped.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._scene_fetch_timeout_seconds
+        scene_start = start
+        start_dt, end_dt = _parse_iso_utc(start), _parse_iso_utc(end)
+        while True:
+            try:
+                result = await self._fetch_scene_result(
+                    scene_start, end, timeout=deadline - loop.time()
+                )
+                return result, scene_start
+            except DetectionPaginationLimitExceeded as exc:
+                half = None
+                if start_dt is not None and end_dt is not None and end_dt > start_dt:
+                    half = (end_dt - start_dt) / 2
+                if half is None or half.total_seconds() < SCENE_FETCH_MIN_WINDOW_SECONDS:
+                    logger.warning(
+                        "Scene fetch %s to %s: %s; starting without the reconstructed scene",
+                        scene_start, end, exc,
+                    )
+                    return ReconstructionResult(), None
+                logger.warning(
+                    "Scene fetch %s to %s: %s; retrying with the last %.1f min",
+                    scene_start, end, exc, half.total_seconds() / 60.0,
+                )
+                start_dt = end_dt - half
+                scene_start = _format_iso_utc(start_dt)
+
     def _slot_names(self) -> tuple:
         """Scenario names that cars we keep in the world may carry (see voices_slots)."""
         if self._slots is not None:
@@ -724,7 +794,7 @@ class DriveSession:
                 max_pages=self._scene_fetch_max_pages,
                 max_items=self._scene_fetch_max_items,
             )
-            fetched_scene = await self._fetch_scene_result(start, end)
+            fetched_scene, scene_start = await self._fetch_scene_with_fallback(start, end)
             # CARLA actor creation remains on this event-loop thread.  A timed
             # out worker can finish only HTTP/dedup work and can never reach it.
             recon_result = self._reconstructor.spawn(fetched_scene)
@@ -838,6 +908,9 @@ class DriveSession:
                 "type": "session_ready",
                 "vehicle_id": self.vehicle.id,
                 "objects_count": len(recon_result.spawned_actors),
+                # start of the history range actually rebuilt (a busy range is
+                # narrowed to its most recent part), None when it was skipped
+                "scene_start": scene_start,
                 "sensor_actor_ids": sensor_actor_ids,
                 "scene_actor_ids": scene_actor_ids,
                 "ego_role": self._ego_role,

@@ -20,6 +20,13 @@ class DetectionPaginationCancelled(DetectionPaginationError):
     """Raised when a caller abandons an in-flight paginated read."""
 
 
+class DetectionPaginationLimitExceeded(DetectionPaginationError):
+    """Raised when a range holds more detections than the page/item bounds allow.
+
+    Nothing is truncated here; a caller may retry with a shorter range.
+    """
+
+
 def _accepts_next_token(fetch_page: Callable[..., dict]) -> bool:
     """Return whether ``fetch_page`` supports the continuation keyword."""
     try:
@@ -96,7 +103,7 @@ def fetch_all_detection_pages(
         pages += 1
         items.extend(page_items)
         if len(items) > max_items:
-            raise DetectionPaginationError(
+            raise DetectionPaginationLimitExceeded(
                 f"detection pagination exceeded {max_items} items"
             )
 
@@ -114,6 +121,6 @@ def fetch_all_detection_pages(
             raise DetectionPaginationError("detection API repeated a continuation token")
         seen_tokens.add(next_token)
         if pages >= max_pages:
-            raise DetectionPaginationError(
+            raise DetectionPaginationLimitExceeded(
                 f"detection pagination exceeded {max_pages} pages"
             )
