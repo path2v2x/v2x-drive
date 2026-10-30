@@ -147,6 +147,30 @@
 				},
 			});
 
+			// Names above the actor dots (role names; the server leaves its own traffic unnamed)
+			map.addLayer({
+				id: 'nearby-actors-labels',
+				type: 'symbol',
+				source: 'nearby-actors',
+				filter: ['!=', ['get', 'name'], ''],
+				layout: {
+					'text-field': ['get', 'name'],
+					'text-font': ['Open Sans Bold'],
+					'text-size': 10,
+					'text-anchor': 'bottom',
+					'text-offset': [0, -0.8],
+					'text-allow-overlap': true,
+					'text-ignore-placement': true,
+					'text-rotation-alignment': 'viewport',
+					'text-pitch-alignment': 'viewport',
+				},
+				paint: {
+					'text-color': '#f8fafc',
+					'text-halo-color': '#0f172a',
+					'text-halo-width': 1.4,
+				},
+			});
+
 			// Car marker — directional arrow that rotates with heading
 			const el = document.createElement('div');
 			el.className = 'car-marker';
@@ -162,7 +186,7 @@
 		});
 	});
 
-	function buildActorsGeoJSON(actors: { id: number; pos: [number, number]; type: string }[]): GeoJSON.FeatureCollection {
+	function buildActorsGeoJSON(actors: { id: number; pos: [number, number]; type: string; name?: string }[]): GeoJSON.FeatureCollection {
 		return {
 			type: 'FeatureCollection',
 			features: actors.map((a) => {
@@ -170,7 +194,7 @@
 				return {
 					type: 'Feature' as const,
 					geometry: { type: 'Point' as const, coordinates: [lon, lat] },
-					properties: { id: a.id, type: a.type },
+					properties: { id: a.id, type: a.type, name: a.name ?? '' },
 				};
 			}),
 		};

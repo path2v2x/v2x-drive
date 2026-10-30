@@ -1094,7 +1094,7 @@ class DriveSession:
     def _camera_state(self) -> dict:
         following = getattr(self._follow_actor, "id", None) if self._follow_actor is not None else None
         return {"type": "camera_pose", **self._fly.pose.to_dict(), "speed": round(self._fly.speed, 1),
-                "following": following}
+                "following": following, "sensor": self._camera_snapshot()}
 
     @staticmethod
     def _actor_pose(actor):
@@ -1428,6 +1428,7 @@ class DriveSession:
             "throttle": round(throttle, 3),
             "brake": round(brake, 3),
             "nearby_actors": self.get_nearby_actors(),
+            "camera": self._camera_snapshot(),
             "dynamic_actors": self.get_dynamic_actors_snapshot(),
         }
         try:
@@ -2480,6 +2481,44 @@ class DriveSession:
                 return kind
         return "other"
 
+    @staticmethod
+    def _label_name(actor) -> str:
+        """The name shown above an actor: its role_name unless it is one of our generic ones."""
+        try:
+            from digital_twin_bridge.actor_ownership import DRIVE_ROLE_PREFIXES
+            attrs = actor.attributes
+            role = str(attrs.get("role_name", "") or "") if attrs else ""
+        except Exception:
+            return ""
+        if not role or role == "hero" or role.startswith(DRIVE_ROLE_PREFIXES):
+            return ""
+        return role
+
+    @staticmethod
+    def _actor_height(actor) -> float:
+        try:
+            return round(2.0 * float(actor.bounding_box.extent.z), 2)
+        except Exception:
+            return 1.6
+
+    def _camera_snapshot(self) -> Optional[dict]:
+        """World pose and image size of the streamed camera, for projecting labels onto its frames."""
+        cam = self._camera_sensor
+        if cam is None:
+            return None
+        try:
+            t = cam.get_transform()
+        except Exception:
+            return None
+        editor = self.vehicle is None
+        return {
+            "x": round(t.location.x, 3), "y": round(t.location.y, 3), "z": round(t.location.z, 3),
+            "pitch": round(t.rotation.pitch, 3), "yaw": round(t.rotation.yaw, 3), "roll": round(t.rotation.roll, 3),
+            "fov": 90.0 if editor else float(self._camera_fov),
+            "w": EDITOR_CAMERA_WIDTH if editor else int(self._camera_width),
+            "h": EDITOR_CAMERA_HEIGHT if editor else int(self._camera_height),
+        }
+
     def get_nearby_actors(self, radius: float = 250.0) -> list[dict]:
         """Return all vehicles within radius meters of the player vehicle.
 
@@ -2507,6 +2546,10 @@ class DriveSession:
                 "yaw": round(t.rotation.yaw, 1),
                 "type": self._actor_kind(a.id),
                 "type_id": str(getattr(a, "type_id", "") or ""),
+                # for the name labels above the actors (mini-map and camera image)
+                "name": self._label_name(a),
+                "z": round(t.location.z, 2),
+                "h": self._actor_height(a),
             })
 
         self._last_vehicle_count = count

@@ -5,6 +5,9 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import CameraViewComponent from '$lib/components/CameraView.svelte';
+	import ActorLabels from '$lib/components/ActorLabels.svelte';
+	import { isGenericRole } from '$lib/projection';
+	import type { CameraInfo, NearbyActor } from '$lib/types';
 	import V2xPerspectivePanel from '$lib/components/V2xPerspectivePanel.svelte';
 	import {
 		clientFps,
@@ -89,6 +92,27 @@
 
 	let active = $derived($driveConnected && $sessionState === 'driving' && $sessionMode === 'editor');
 	let pose = $derived($cameraPose);
+	// names above the named actors (VOICES vehicles, other clients' cars) in the camera image
+	const LABEL_GROUPS = new Set(['ego', 'voices', 'ghost', 'fleet', 'foreign', 'traffic', 'dynamic', 'walker']);
+	let labelActors = $derived.by((): NearbyActor[] =>
+		$worldActors
+			.filter((a) => a.pos && typeof a.id === 'number' && LABEL_GROUPS.has(a.group) && !isGenericRole(a.role))
+			.map((a) => ({
+				id: a.id,
+				pos: [a.pos![0], a.pos![1]] as [number, number],
+				yaw: a.yaw ?? 0,
+				type: 'other' as const,
+				name: a.role,
+				z: a.pos![2],
+				h: a.group === 'walker' ? 1.8 : 1.6
+			}))
+	);
+	let labelCamera = $derived.by((): CameraInfo | null => {
+		const p = $cameraPose;
+		if (!p) return null;
+		if (p.sensor) return p.sensor;
+		return { x: p.x, y: p.y, z: p.z, pitch: p.pitch, yaw: p.yaw, roll: 0, fov: 90, w: 960, h: 540 };
+	});
 	let selected = $derived($worldActors.find((a) => a.id === $selectedActorId) ?? null);
 	let filtered = $derived(
 		$worldActors.filter((a) => {
@@ -311,6 +335,7 @@
 		data-testid="editor-camera"
 	>
 		<CameraViewComponent bind:this={cameraViewRef} activeView="free" onSwitchView={() => {}} />
+		<ActorLabels actors={labelActors} camera={labelCamera} />
 		{#if !active}
 			<div class="absolute inset-0 flex items-center justify-center bg-gray-950/80">
 				<div class="text-center">

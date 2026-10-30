@@ -69,6 +69,7 @@
 	import CalibrationWizard from '$lib/components/CalibrationWizard.svelte';
 	import CameraViewComponent from '$lib/components/CameraView.svelte';
 	import HudOverlay from '$lib/components/HudOverlay.svelte';
+	import ActorLabels from '$lib/components/ActorLabels.svelte';
 	import DrivingHud from '$lib/components/DrivingHud.svelte';
 	import ControlBar from '$lib/components/ControlBar.svelte';
 	import type { ControlSection } from '$lib/components/ControlBar.svelte';
@@ -1031,6 +1032,8 @@
 					onZoom={zoomCamera}
 					onZoomReset={resetCameraZoom}
 				/>
+				<!-- names above the actors in the picture -->
+				<ActorLabels actors={currentTelemetry.nearby_actors ?? []} camera={currentTelemetry.camera ?? null} />
 				<!-- Classic on-camera HUD (throttle/brake bars, speed, steering dot) —
 				     reverted to the pre-dashboard-overhaul look by user request. -->
 				{#if hudMode === 'classic'}

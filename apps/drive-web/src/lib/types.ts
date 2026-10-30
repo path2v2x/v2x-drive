@@ -101,6 +101,25 @@ export interface NearbyActor {
 	pos: [number, number];
 	yaw: number;
 	type: 'traffic' | 'dynamic' | 'civilian' | 'erv' | 'other';
+	/** label shown above the actor (its role_name; empty for the server's own generic cars) */
+	name?: string;
+	/** location z (m) and bounding-box height (m), for placing the label above the roof */
+	z?: number;
+	h?: number;
+}
+
+/** World pose and image size of the streamed camera (every telemetry tick). */
+export interface CameraInfo {
+	x: number;
+	y: number;
+	z: number;
+	pitch: number;
+	yaw: number;
+	roll: number;
+	/** horizontal field of view, degrees */
+	fov: number;
+	w: number;
+	h: number;
 }
 
 /** One V2X fleet vehicle as carried in telemetry (20 Hz), see V2xFleetVehicle for the full record. */
@@ -159,6 +178,7 @@ export interface VehicleTelemetry {
 	throttle: number;
 	brake: number;
 	nearby_actors?: NearbyActor[];
+	camera?: CameraInfo | null;
 	dynamic_actors?: DynamicActor[];
 	v2x_fleet?: V2xFleetCompact[];
 	hud?: HudTelemetry;
@@ -178,6 +198,8 @@ export interface CameraPoseMessage extends DriveMessage {
 	pitch: number;
 	speed: number;
 	following: number | null;
+	/** the actual camera sensor's pose and image size (null before it exists) */
+	sensor?: CameraInfo | null;
 }
 
 export interface EditorStartPose {
