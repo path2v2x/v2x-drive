@@ -85,6 +85,7 @@
 	import TeleportPanel from '$lib/components/TeleportPanel.svelte';
 	import PacketLogPanel from '$lib/components/PacketLogPanel.svelte';
 	import V2xPerspectivePanel from '$lib/components/V2xPerspectivePanel.svelte';
+	import V2xMessagesPanel from '$lib/components/V2xMessagesPanel.svelte';
 	import V2xVehiclePanel from '$lib/components/V2xVehiclePanel.svelte';
 	import CameraSettingsPanel from '$lib/components/CameraSettingsPanel.svelte';
 	import ScenarioPicker from '$lib/components/ScenarioPicker.svelte';
@@ -1181,6 +1182,8 @@
 						aria-label="V2X"
 					>
 						<V2xPerspectivePanel />
+						<!-- the driver's messages, built from the BSMs the ego hears -->
+						<V2xMessagesPanel />
 						<div class="mt-auto pt-3 text-[10px] text-gray-500">Tab: next camera · H: hide the sidebars</div>
 					</aside>
 				{/if}
